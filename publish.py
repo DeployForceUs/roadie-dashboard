@@ -29,7 +29,9 @@ def normalize(value):
 def make_payload():
     with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5) as db:
         db.row_factory = sqlite3.Row
-        records = db.execute("SELECT gig_key,miles,deliveries,destination,last_price,last_minutes,fit,last_seen,first_seen FROM gigs").fetchall()
+        cols = {row[1] for row in db.execute("PRAGMA table_info(gigs)")}
+        cargo_select = ",total_weight_lbs,max_weight_lbs,max_dimension_in,max_dimension_raw,total_items" if "total_weight_lbs" in cols else ""
+        records = db.execute(f"SELECT gig_key,miles,deliveries,destination,last_price,last_minutes,fit,last_seen,first_seen{cargo_select} FROM gigs").fetchall()
         changes = db.execute("SELECT seen_at,gig_key,event,old_price,new_price FROM changes ORDER BY id DESC LIMIT 250").fetchall()
     history = []
     for row in records:
@@ -44,10 +46,16 @@ def make_payload():
             continue
         fit_text = str(r["fit"] or "").upper()
         fit = "no" if "NOT A FIT" in fit_text else "unknown"
+        total_weight = float(r["total_weight_lbs"]) if r.get("total_weight_lbs") is not None else None
+        heaviest_item = float(r["max_weight_lbs"]) if r.get("max_weight_lbs") is not None else None
+        max_dim = str(r["max_dimension_raw"]).strip() if r.get("max_dimension_raw") else None
+        total_items = int(r["total_items"]) if r.get("total_items") is not None else None
         history.append(dict(key=r["gig_key"], price=price, hour=round(price*60/mins,2),
             mile=round(price/miles,2), miles=miles, deliveries=r["deliveries"],
             minutes=int(mins), city=(r["destination"] or "Неизвестно").replace(", FL",""),
-            fit=fit, last_seen=normalize(r["last_seen"]), first_seen=normalize(r["first_seen"])))
+            fit=fit, total_weight=total_weight, heaviest_item=heaviest_item,
+            max_dimension=max_dim, total_items=total_items,
+            last_seen=normalize(r["last_seen"]), first_seen=normalize(r["first_seen"])))
     history.sort(key=lambda x:x["last_seen"] or "",reverse=True)
     # Current view comes from the last observed map, never from historical gigs alone.
     # A direct map ID must match a captured detail; clusters require a separate
@@ -83,11 +91,16 @@ def make_payload():
                     if not price or not miles or not mins:
                         missing += 1
                         continue
+                    c_weight = number("Total Weight")
+                    c_heaviest = number("Heaviest Item")
+                    c_dim = str(d.get("Max Dimension")).strip() if d.get("Max Dimension") else None
+                    c_items = int(number("Total Items")) if number("Total Items") is not None else None
                     current.append(dict(key=str(gig_id),price=price,
                         hour=round(price*60/mins,2),mile=round(price/miles,2),
                         miles=miles,deliveries=0,minutes=int(mins),
                         city=str(d.get("To","Неизвестно")).replace(", FL",""),
-                        fit="unknown"))
+                        fit="unknown", total_weight=c_weight, heaviest_item=c_heaviest,
+                        max_dimension=c_dim, total_items=c_items))
                 if scan["cluster_count"]:
                     current_status = "partial_clusters"
                 elif missing:

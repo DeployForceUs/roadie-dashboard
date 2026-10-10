@@ -85,7 +85,7 @@ def make_payload():
                         continue
                     current.append(dict(key=str(gig_id),price=price,
                         hour=round(price*60/mins,2),mile=round(price/miles,2),
-                        miles=miles,deliveries=1,minutes=int(mins),
+                        miles=miles,deliveries=0,minutes=int(mins),
                         city=str(d.get("To","Неизвестно")).replace(", FL",""),
                         fit="unknown"))
                 if scan["cluster_count"]:

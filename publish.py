@@ -77,7 +77,7 @@ def make_payload():
                         missing += 1
                         continue
                     def number(field):
-                        match = re.search(r"\\d+(?:[.,]\\d+)?",str(d.get(field,"")))
+                        match = re.search(r"[0-9]+(?:[.,][0-9]+)?",str(d.get(field,"")))
                         return float(match.group().replace(",",".")) if match else None
                     price, miles, mins = number("Price"),number("Distance"),number("Time")
                     if not price or not miles or not mins:

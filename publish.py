@@ -4,6 +4,7 @@ import base64
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -48,35 +49,54 @@ def make_payload():
             minutes=int(mins), city=(r["destination"] or "Неизвестно").replace(", FL",""),
             fit=fit, last_seen=normalize(r["last_seen"]), first_seen=normalize(r["first_seen"])))
     history.sort(key=lambda x:x["last_seen"] or "",reverse=True)
-    # Only the watcher's fully verified carousel snapshots count as current.
+    # Current view comes from the last observed map, never from historical gigs alone.
+    # A direct map ID must match a captured detail; clusters require a separate
+    # verified full-map pass and must not be silently omitted.
     current = []
     current_status = "not_available"
     scan_at = None
     with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5) as db:
         db.row_factory = sqlite3.Row
-        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='verified_carousel_snapshots'").fetchone()
-        if exists:
-            snap = db.execute("SELECT observed_at, expected_cards, cards_json FROM verified_carousel_snapshots ORDER BY id DESC LIMIT 1").fetchone()
-            if snap:
-                scan_at = snap["observed_at"]
-                try:
-                    cards = json.loads(snap["cards_json"])
-                    if len(cards) == snap["expected_cards"] and len({c["key"] for c in cards}) == len(cards):
-                        destinations = {x["key"]: x["city"] for x in history}
-                        for c in cards:
-                            price, miles, mins = float(c["price"]), float(c["miles"]), float(c["minutes"])
-                            if miles <= 0 or mins <= 0: raise ValueError("invalid route")
-                            current.append(dict(key=c["key"],price=price,hour=round(price*60/mins,2),
-                                mile=round(price/miles,2),miles=miles,deliveries=c["deliveries"],
-                                minutes=int(mins),city=destinations.get(c["key"],"Неизвестно"),
-                                fit="no" if "NOT A FIT" in str(c.get("fit","")).upper() else "unknown"))
-                        current_status = "verified"
-                except (ValueError,TypeError,KeyError):
-                    current = []
-                    current_status = "invalid_snapshot"
+        tables = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "map_scans" in tables:
+            scan = db.execute("SELECT observed_at,direct_ids_json,cluster_count FROM map_scans ORDER BY scan_id DESC LIMIT 1").fetchone()
+            if scan:
+                scan_at = scan["observed_at"]
+                ids = json.loads(scan["direct_ids_json"])
+                details = {}
+                if "direct_gig_details" in tables:
+                    for row in db.execute("SELECT gig_id,details_json FROM direct_gig_details"):
+                        try:
+                            details[row["gig_id"]] = json.loads(row["details_json"])
+                        except (ValueError,TypeError):
+                            pass
+                missing = 0
+                for gig_id in ids:
+                    d = details.get(str(gig_id))
+                    if not d:
+                        missing += 1
+                        continue
+                    def number(field):
+                        match = re.search(r"\\d+(?:[.,]\\d+)?",str(d.get(field,"")))
+                        return float(match.group().replace(",",".")) if match else None
+                    price, miles, mins = number("Price"),number("Distance"),number("Time")
+                    if not price or not miles or not mins:
+                        missing += 1
+                        continue
+                    current.append(dict(key=str(gig_id),price=price,
+                        hour=round(price*60/mins,2),mile=round(price/miles,2),
+                        miles=miles,deliveries=1,minutes=int(mins),
+                        city=str(d.get("To","Неизвестно")).replace(", FL",""),
+                        fit="unknown"))
+                if scan["cluster_count"]:
+                    current_status = "partial_clusters"
+                elif missing:
+                    current_status = "partial_details"
+                else:
+                    current_status = "map_direct_only"
     return dict(generated_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         current=current, current_status=current_status, scan_at=scan_at, history=history,
-        changes=[dict(x) for x in changes], note="Current availability is not verified")
+        changes=[dict(x) for x in changes], note="Current is based on latest observed direct IDs; cluster coverage and detail freshness are not guaranteed")
 
 def publish(payload):
     data=json.dumps(payload,ensure_ascii=False,separators=(",",":"))

@@ -48,9 +48,34 @@ def make_payload():
             minutes=int(mins), city=(r["destination"] or "Неизвестно").replace(", FL",""),
             fit=fit, last_seen=normalize(r["last_seen"]), first_seen=normalize(r["first_seen"])))
     history.sort(key=lambda x:x["last_seen"] or "",reverse=True)
-    # No current snapshot until the watcher emits a verified complete-scan record.
+    # Only the watcher's fully verified carousel snapshots count as current.
+    current = []
+    current_status = "not_available"
+    scan_at = None
+    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5) as db:
+        db.row_factory = sqlite3.Row
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='verified_carousel_snapshots'").fetchone()
+        if exists:
+            snap = db.execute("SELECT observed_at, expected_cards, cards_json FROM verified_carousel_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+            if snap:
+                scan_at = snap["observed_at"]
+                try:
+                    cards = json.loads(snap["cards_json"])
+                    if len(cards) == snap["expected_cards"] and len({c["key"] for c in cards}) == len(cards):
+                        destinations = {x["key"]: x["city"] for x in history}
+                        for c in cards:
+                            price, miles, mins = float(c["price"]), float(c["miles"]), float(c["minutes"])
+                            if miles <= 0 or mins <= 0: raise ValueError("invalid route")
+                            current.append(dict(key=c["key"],price=price,hour=round(price*60/mins,2),
+                                mile=round(price/miles,2),miles=miles,deliveries=c["deliveries"],
+                                minutes=int(mins),city=destinations.get(c["key"],"Неизвестно"),
+                                fit="no" if "NOT A FIT" in str(c.get("fit","")).upper() else "unknown"))
+                        current_status = "verified"
+                except (ValueError,TypeError,KeyError):
+                    current = []
+                    current_status = "invalid_snapshot"
     return dict(generated_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-        current=[], current_status="not_available", history=history,
+        current=current, current_status=current_status, scan_at=scan_at, history=history,
         changes=[dict(x) for x in changes], note="Current availability is not verified")
 
 def publish(payload):

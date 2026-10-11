@@ -1,8 +1,8 @@
 """Regression tests for Roadie map without refresh_button (2026-10-11 incident).
 
-These tests deliberately fail against the current classifier until the watcher
-can safely distinguish MAP from refresh availability. Do not deploy a
-classifier-only fix: main() currently taps fixed refresh coordinates unconditionally.
+The incident map must classify as MAP even without refresh_button.
+The watcher must separately guard the refresh action; classification alone
+must never authorize a blind coordinate tap.
 """
 import unittest
 from roadie_ui_guard import Screen, classify_xml
@@ -23,6 +23,24 @@ class MapWithoutRefreshTests(unittest.TestCase):
             ("com.roadie.drive.android.app:id/my_location_button", ""),
         )
         self.assertIs(classify_xml(payload), Screen.MAP)
+
+    def test_card_overlay_takes_precedence_over_map(self):
+        payload = xml(
+            ("com.roadie.drive.android.app:id/fragment_map_mapview", ""),
+            ("", "Google Map"),
+            ("com.roadie.drive.android.app:id/gig_card_pager", ""),
+            ("com.roadie.drive.android.app:id/gig_summary_card", ""),
+        )
+        self.assertIs(classify_xml(payload), Screen.CAROUSEL)
+
+    def test_detail_overlay_takes_precedence_over_map(self):
+        payload = xml(
+            ("com.roadie.drive.android.app:id/fragment_map_mapview", ""),
+            ("", "Google Map"),
+            ("com.roadie.drive.android.app:id/close_details", ""),
+            ("com.roadie.drive.android.app:id/details_container_scroll", ""),
+        )
+        self.assertIs(classify_xml(payload), Screen.DETAIL)
 
     def test_menu_only_is_not_map(self):
         payload = xml(("com.roadie.drive.android.app:id/menu_button", ""))

@@ -43,3 +43,23 @@ def allowed_action(screen: Screen, action: str) -> bool:
         (Screen.CAROUSEL, "open_detail"),
         (Screen.DETAIL, "close_detail"),
     }
+
+def refresh_bounds(xml_text: str):
+    """Return a verified refresh control's bounds, or None.
+
+    A MAP classification alone does not prove that refresh is available.
+    No guessed coordinates or default centers are permitted.
+    """
+    if classify_xml(xml_text) is not Screen.MAP:
+        return None
+    try:
+        root = ET.fromstring(xml_text)
+    except (ET.ParseError, TypeError):
+        return None
+    matches = [
+        n.get("bounds")
+        for n in root.iter()
+        if n.get("resource-id", "").split("/")[-1] == "refresh_button"
+        and n.get("bounds") not in ("", None, "[0,0][0,0]")
+    ]
+    return matches[0] if len(matches) == 1 else None

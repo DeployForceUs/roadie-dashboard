@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import uuid
+import shutil
 import xml.etree.ElementTree as ET
 from roadie_ui_guard import classify_xml, Screen
 
@@ -35,7 +36,11 @@ def capture_xml(destination, run_adb, min_bytes=3600):
             raise CaptureError('Invalid ADB XML') from exc
         screen = classify_xml(data.decode('utf-8'))
         if screen is Screen.UNKNOWN:
-            raise CaptureError('Unrecognized or conflicting Android screen')
+            quarantine = destination.parent / 'rejected_xml'
+            quarantine.mkdir(parents=True, exist_ok=True)
+            saved = quarantine / (destination.stem + '_' + uuid.uuid4().hex[:12] + '.xml')
+            shutil.copy2(temp, saved)
+            raise CaptureError(f'Unrecognized or conflicting Android screen; saved={saved}')
         os.replace(temp, destination)
         return screen
     finally:

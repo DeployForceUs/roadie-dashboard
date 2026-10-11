@@ -783,14 +783,40 @@ def main():
                 if open_destination_if_needed(summary_tmp) is False:
                     log("🔄 first card changed; recover next cycle")
                     break
-                record_cards_if_complete()
-                seen.add((gid, e["bounds"]))
-                # No position counter means no verified second card: NO SWIPE.
-                # If a direct marker opens a multi-card carousel, defer to the
-                # established carousel path rather than guessing navigation.
+                # A verified counter permits N-1 swipes. No counter means
+                # one visible card and absolutely no speculative swipe.
                 active_pos = visible_position(summary_tmp)
                 if active_pos and active_pos[1] > 1:
-                    log("🔄 direct marker opened multi-card carousel; rescan map")
+                    last_position, total = active_pos
+                    stall = 0
+                    for i in range(2, min(MAX_CARDS, total) + 1):
+                        if last_position >= total:
+                            break
+                        swipe(CAR_SWIPE_X1, CAR_SWIPE_Y, CAR_SWIPE_X2, CAR_SWIPE_Y, SWIPE_MS)
+                        time.sleep(SLEEP_AFTER_SWIPE)
+                        cur = os.path.join(TMP_DIR, f"{gid}_card_{i:03d}.xml")
+                        if not dump_xml_checked(cur):
+                            cycle_ambiguous = True
+                            break
+                        pos = visible_position(cur)
+                        if not pos or pos[1] != total:
+                            cycle_ambiguous = True
+                            log("🔄 card count/position changed; rescan next cycle")
+                            break
+                        if pos[0] <= last_position:
+                            stall += 1
+                            if stall >= MAX_STALL_SWIPES:
+                                cycle_ambiguous = True
+                                break
+                            continue
+                        last_position = pos[0]
+                        stall = 0
+                        capture_cards(cur)
+                        if open_destination_if_needed(cur) is False:
+                            cycle_ambiguous = True
+                            break
+                record_cards_if_complete()
+                seen.add((gid, e["bounds"]))
                 back()
                 time.sleep(SLEEP_AFTER_BACK)
 

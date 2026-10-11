@@ -16,7 +16,7 @@ def classify_xml(xml_text: str) -> Screen:
     ids = {n.get("resource-id", "").split("/")[-1] for n in root.iter()}
     evidence = [
         (Screen.MAP, {"refresh_button", "menu_button"} <= ids),
-        (Screen.CAROUSEL, {"gig_card_pager", "position_in_stack"} <= ids),
+        (Screen.CAROUSEL, "gig_card_pager" in ids),
         (Screen.DETAIL, {"close_details", "details_container_scroll"} <= ids),
     ]
     found = [s for s, present in evidence if present]

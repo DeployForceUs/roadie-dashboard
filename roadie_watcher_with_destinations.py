@@ -553,6 +553,14 @@ def main():
                         if bounds and bounds != "[0,0][0,0]":
                             m = POS_RE.match(node.get("text",""))
                             if m: candidates.append((int(m.group(1)),bounds))
+                if not candidates:
+                    summaries = [
+                        n for n in root.iter()
+                        if n.get("resource-id", "").split("/")[-1] == "gig_summary_card"
+                        and n.get("bounds", "") not in ("", "[0,0][0,0]")
+                    ]
+                    if len(summaries) == 1:
+                        candidates = [(1, summaries[0].get("bounds", ""))]
                 if len(candidates) != 1:
                     return
                 position, bounds = candidates[0]
@@ -566,7 +574,10 @@ def main():
                 # Position bounds sit in the top right; tap inside the card
                 # near its price, safely inside the gig_card_pager.
                 cx,cy = get_bounds_center(bounds)
-                tap(550, min(2180,cy+205))
+                if "position_in_stack" in {n.get("resource-id", "").split("/")[-1] for n in root.iter()}:
+                    tap(550, min(2180,cy+205))
+                else:
+                    tap(cx, cy)
                 time.sleep(SLEEP_AFTER_TAP)
                 detail_path = os.path.join(ensure_session_for_first_save(),
                                            f"destination_{position:03d}.xml")
@@ -629,6 +640,14 @@ def main():
                             if m and b != "[0,0][0,0]":
                                 active.append(int(m.group(1)))
                     _, returned_cards = store_fields(store_parse(verify))
+                    if not active and observed_screen(verify) is Screen.CAROUSEL:
+                        summaries = [
+                            n for n in ET.parse(verify).getroot().iter()
+                            if n.get("resource-id", "").split("/")[-1] == "gig_summary_card"
+                            and n.get("bounds", "") not in ("", "[0,0][0,0]")
+                        ]
+                        if len(summaries) == 1:
+                            active = [1]
                     if len(active) != 1 or active[0] != position or returned_cards.get(position,{}).get("key") != k:
                         log(f"🔄 carousel changed on return: {k}, position={position}, active={active}; rescan next cycle")
                         return False
@@ -746,83 +765,34 @@ def main():
                 log(f"👉 open gig {gid} at ({x},{y})")
                 tap(x,y); time.sleep(SLEEP_AFTER_TAP)
 
-                # A direct marker opens an AVAILABLE GIG summary, not Details.
-                # Verify the summary first; never tap arbitrary UNKNOWN screens.
+                # Read the first summary BEFORE any swipe or detail tap.
                 summary_tmp = os.path.join(TMP_DIR, f"{gid}_summary.xml")
                 if not dump_xml_checked(summary_tmp):
                     log("⛔ direct summary capture failed; recover next cycle")
                     break
                 summary_screen = observed_screen(summary_tmp)
-                if summary_screen is Screen.CAROUSEL:
-                    root = ET.parse(summary_tmp).getroot()
-                    summaries = [
-                        n for n in root.iter()
-                        if n.get("resource-id", "").split("/")[-1] == "gig_summary_card"
-                        and n.get("bounds", "") not in ("", "[0,0][0,0]")
-                    ]
-                    if len(summaries) != 1:
-                        log("⛔ no unique visible gig summary; recover next cycle")
-                        break
-                    sx, sy = get_bounds_center(summaries[0].get("bounds", ""))
-                    log(f"👉 open AVAILABLE GIG details at ({sx},{sy})")
-                    tap(sx, sy)
-                    time.sleep(SLEEP_AFTER_TAP)
-                elif summary_screen is not Screen.DETAIL:
+                if summary_screen is not Screen.CAROUSEL:
                     log(f"⛔ unexpected marker result: {summary_screen}; recover next cycle")
                     break
-
-                detail_tmp = os.path.join(TMP_DIR, f"{gid}_detail.xml")
-                if not dump_xml_checked(detail_tmp):
-                    log("⛔ direct detail capture failed; recover next cycle")
+                capture_cards(summary_tmp)
+                active_card = cycle_cards.get(1)
+                if not active_card:
+                    log("⛔ no verified first card fields; recover next cycle")
                     break
-                session_dir = ensure_session_for_first_save()
-                detail_sess = os.path.join(session_dir, f"{gid}.xml")
-                try:
-                    shutil.copy2(detail_tmp, detail_sess)
-                    log(f"📄 mirrored TMP → session: {os.path.basename(detail_sess)}")
-                except Exception as ex:
-                    log(f"⚠️ mirror error: {ex}")
-
-                heartbeat("DETAIL")
-                if observed_screen(detail_sess) is not Screen.DETAIL:
-                    # A direct map marker can open a carousel instead of DETAIL.
-                    # Reopening it every cycle stresses the app without progress.
-                    # This is a bounded retry, not permanent suppression.
-                    direct_marker_retry_after[gid] = (
-                        time.monotonic() + DIRECT_MARKER_RETRY_SECONDS
-                    )
-                    log(f"⛔ expected DETAIL for {gid}; retry after "
-                        f"{DIRECT_MARKER_RETRY_SECONDS}s; recover next cycle")
+                log(f"📦 first card {gid}: {active_card['key']} / {active_card['price']}")
+                if open_destination_if_needed(summary_tmp) is False:
+                    log("🔄 first card changed; recover next cycle")
                     break
-                seen.add((gid,e["bounds"]))
-                if maybe_save_detail(detail_sess, f"{gid}_info.csv",
-                                     ensure_session_for_first_save, saved_card_sigs):
-                    saved_any = 1
-
-                # Index previously opened direct-gig details by the actual map ID.
-                try:
-                    import json
-                    details = dict(collect_from_detail_xml(detail_sess))
-                    if details.get("Support ID") or details.get("Distance"):
-                        with gig_db:
-                            gig_db.execute("""CREATE TABLE IF NOT EXISTS direct_gig_details (
-                                gig_id TEXT PRIMARY KEY,
-                                observed_at TEXT NOT NULL,
-                                details_json TEXT NOT NULL
-                            )""")
-                            gig_db.execute(
-                                """INSERT INTO direct_gig_details(gig_id,observed_at,details_json)
-                                   VALUES (?,?,?)
-                                   ON CONFLICT(gig_id) DO UPDATE SET
-                                     observed_at=excluded.observed_at,
-                                     details_json=excluded.details_json""",
-                                (gid,datetime.now().isoformat(timespec="seconds"),
-                                 json.dumps(details,ensure_ascii=False))
-                            )
-                except Exception as exc:
-                    log(f"⚠️ direct gig index failed: {exc}")
-
-                back(); time.sleep(SLEEP_AFTER_BACK)
+                record_cards_if_complete()
+                seen.add((gid, e["bounds"]))
+                # No position counter means no verified second card: NO SWIPE.
+                # If a direct marker opens a multi-card carousel, defer to the
+                # established carousel path rather than guessing navigation.
+                active_pos = visible_position(summary_tmp)
+                if active_pos and active_pos[1] > 1:
+                    log("🔄 direct marker opened multi-card carousel; rescan map")
+                back()
+                time.sleep(SLEEP_AFTER_BACK)
 
         gig_db.close()
         heartbeat("CYCLE_DONE")

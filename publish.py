@@ -160,8 +160,29 @@ def make_payload():
                         current_status = "verified_carousel" if len(current)==len(cards) else "partial_details"
                 except (ValueError,TypeError,KeyError,OverflowError):
                     pass
+    # Historical observations, not proof that an absent gig was accepted.
+    observations = []
+    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5) as db:
+        tables = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "verified_carousel_snapshots" in tables:
+            for stamp, expected, raw in db.execute(
+                "SELECT observed_at,expected_cards,cards_json FROM verified_carousel_snapshots ORDER BY id DESC LIMIT 200"
+            ):
+                try:
+                    cards = json.loads(raw)
+                    if len(cards) != expected or len({c["key"] for c in cards}) != expected:
+                        continue
+                    observations.append(dict(observed_at=normalize(stamp),
+                        count=expected,
+                        gigs=[dict(key=c["key"],price=c.get("price"),
+                                   miles=c.get("miles"),minutes=c.get("minutes"),
+                                   deliveries=c.get("deliveries")) for c in cards]))
+                except (ValueError,TypeError,KeyError):
+                    continue
+    observations.reverse()
     return dict(generated_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         current=current, current_status=current_status, scan_at=scan_at, history=history,
+        observations=observations,
         changes=[dict(x) for x in changes], note="Current is based on latest observed direct IDs; cluster coverage and detail freshness are not guaranteed")
 
 def publish(payload):

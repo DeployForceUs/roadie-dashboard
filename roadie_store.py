@@ -158,6 +158,23 @@ def fields(nodes):
     positions = [(i, int(m.group(1)), int(m.group(2)))
                  for i,(rid,t,d) in enumerate(nodes)
                  if rid == "position_in_stack" and (m := POS.match(t))]
+    # A single AVAILABLE GIG summary has no position_in_stack. Only synthesize
+    # 1 OF 1 when exactly one visible gig_summary_card exists.
+    if not positions:
+        try:
+            root = ET.parse(path).getroot()
+            summaries = [
+                n for n in root.iter()
+                if n.get("resource-id", "").split("/")[-1] == "gig_summary_card"
+                and n.get("bounds", "") not in ("", "[0,0][0,0]")
+            ]
+            if len(summaries) == 1:
+                start = next((i for i, (rid, _, _) in enumerate(nodes)
+                              if rid == "gig_summary_card"), None)
+                if start is not None:
+                    positions = [(start, 1, 1)]
+        except (OSError, ET.ParseError):
+            pass
     out = {}
     for k,(idx,number,total) in enumerate(positions):
         end = positions[k+1][0] if k+1 < len(positions) else len(nodes)

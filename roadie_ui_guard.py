@@ -14,13 +14,18 @@ def classify_xml(xml_text: str) -> Screen:
     except (ET.ParseError, TypeError):
         return Screen.UNKNOWN
     ids = {n.get("resource-id", "").split("/")[-1] for n in root.iter()}
-    evidence = [
-        (Screen.MAP, {"refresh_button", "menu_button"} <= ids),
-        (Screen.CAROUSEL, "gig_card_pager" in ids),
-        (Screen.DETAIL, {"close_details", "details_container_scroll"} <= ids),
-    ]
-    found = [s for s, present in evidence if present]
-    return found[0] if len(found) == 1 else Screen.UNKNOWN
+    # A direct map marker opens a single AVAILABLE GIG summary card.
+    # It has gig_card_pager but NO position_in_stack. The map remains
+    # mounted behind the overlay, so MAP markers can coexist with it.
+    if {"close_details", "details_container_scroll"} <= ids:
+        return Screen.DETAIL
+    if "gig_card_pager" in ids and (
+        "position_in_stack" in ids or "gig_summary_card" in ids
+    ):
+        return Screen.CAROUSEL
+    if {"refresh_button", "menu_button"} <= ids:
+        return Screen.MAP
+    return Screen.UNKNOWN
 
 def allowed_action(screen: Screen, action: str) -> bool:
     return (screen, action) in {

@@ -158,6 +158,13 @@ def fields(nodes):
     positions = [(i, int(m.group(1)), int(m.group(2)))
                  for i,(rid,t,d) in enumerate(nodes)
                  if rid == "position_in_stack" and (m := POS.match(t))]
+    # parse() returns (resource-id, text, content-desc) tuples, not an XML path.
+    # Only one summary marker is unambiguous; never invent multiple cards.
+    if not positions:
+        summaries = [i for i, (rid, _, _) in enumerate(nodes)
+                     if rid == "gig_summary_card"]
+        if len(summaries) == 1:
+            positions = [(summaries[0], 1, 1)]
     out = {}
     for k,(idx,number,total) in enumerate(positions):
         end = positions[k+1][0] if k+1 < len(positions) else len(nodes)

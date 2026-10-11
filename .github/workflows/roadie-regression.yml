@@ -1,0 +1,25 @@
+name: Roadie safe regression tests
+on:
+  push:
+    branches:
+      - fix/single-marker-carousel-cooldown
+  pull_request:
+    paths:
+      - 'roadie_watcher_with_destinations.py'
+      - 'roadie_supervision_diagnostics.py'
+      - 'tests/**'
+      - '.github/workflows/roadie-regression.yml'
+  workflow_dispatch:
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile Python files
+        run: python -m py_compile roadie_store.py roadie_ui_guard.py roadie_watcher_with_destinations.py roadie_test_watchdog.py roadie_supervision_diagnostics.py
+      - name: Run offline unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v

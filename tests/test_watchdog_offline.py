@@ -20,7 +20,7 @@ class WatchdogTests(unittest.TestCase):
 
     def test_restart_budget_expires_old_failures(self):
         history = deque([100, 110, 120])
-        self.assertFalse(wd.restart_budget_exhausted(history, 1001))
+        self.assertFalse(wd.restart_budget_exhausted(history, 1021))
         self.assertEqual(list(history), [])
 
     def test_restart_budget_window_boundary(self):

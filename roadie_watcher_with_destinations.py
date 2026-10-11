@@ -746,10 +746,34 @@ def main():
                 log(f"👉 open gig {gid} at ({x},{y})")
                 tap(x,y); time.sleep(SLEEP_AFTER_TAP)
 
-                # дамп в TMP → зеркалим в сессию → сохраняем из сессии
-                detail_tmp  = os.path.join(TMP_DIR, f"{gid}_detail.xml")
+                # A direct marker opens an AVAILABLE GIG summary, not Details.
+                # Verify the summary first; never tap arbitrary UNKNOWN screens.
+                summary_tmp = os.path.join(TMP_DIR, f"{gid}_summary.xml")
+                if not dump_xml_checked(summary_tmp):
+                    log("⛔ direct summary capture failed; recover next cycle")
+                    break
+                summary_screen = observed_screen(summary_tmp)
+                if summary_screen is Screen.CAROUSEL:
+                    root = ET.parse(summary_tmp).getroot()
+                    summaries = [
+                        n for n in root.iter()
+                        if n.get("resource-id", "").split("/")[-1] == "gig_summary_card"
+                        and n.get("bounds", "") not in ("", "[0,0][0,0]")
+                    ]
+                    if len(summaries) != 1:
+                        log("⛔ no unique visible gig summary; recover next cycle")
+                        break
+                    sx, sy = get_bounds_center(summaries[0].get("bounds", ""))
+                    log(f"👉 open AVAILABLE GIG details at ({sx},{sy})")
+                    tap(sx, sy)
+                    time.sleep(SLEEP_AFTER_TAP)
+                elif summary_screen is not Screen.DETAIL:
+                    log(f"⛔ unexpected marker result: {summary_screen}; recover next cycle")
+                    break
+
+                detail_tmp = os.path.join(TMP_DIR, f"{gid}_detail.xml")
                 if not dump_xml_checked(detail_tmp):
-                    log("⛔ direct detail capture failed; do not index or save")
+                    log("⛔ direct detail capture failed; recover next cycle")
                     break
                 session_dir = ensure_session_for_first_save()
                 detail_sess = os.path.join(session_dir, f"{gid}.xml")

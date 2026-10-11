@@ -63,6 +63,7 @@ def make_payload():
     current = []
     current_status = "not_available"
     scan_at = None
+    verified_at = None
     with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5) as db:
         db.row_factory = sqlite3.Row
         tables = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -128,7 +129,8 @@ def make_payload():
                     if (scanned is not None and prior_scan["cluster_count"] == 1
                             and 0 <= (observed-scanned).total_seconds() <= 120
                             and 0 <= (now-observed).total_seconds() <= 180
-                            and abs((latest-observed).total_seconds()) <= 120
+                            # A newer intermediate map scan must not erase a recent verified carousel.
+                            # Freshness is limited by the 180-second observation TTL above.
                             and len(cards) == snapshot["expected_cards"]
                             and len({c["key"] for c in cards}) == len(cards)):
                         indexed = {h["key"]:h for h in history}
@@ -150,12 +152,18 @@ def make_payload():
                                 total_items=h.get("total_items"),
                                 first_seen=h.get("first_seen"),
                                 last_seen=normalize(snapshot["observed_at"])))
-                        current_status = "verified_carousel" if len(current)==len(cards) else "partial_details"
+                        if len(current) == len(cards):
+                            verified_at = snapshot["observed_at"]
+                            current_status = ("verified_carousel" if (latest-observed).total_seconds() <= 5
+                                              else "waiting_for_verification")
+                        else:
+                            current_status = "partial_details"
                 except (ValueError,TypeError,KeyError,OverflowError):
                     pass
     return dict(generated_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-        current=current, current_status=current_status, scan_at=scan_at, history=history,
-        changes=[dict(x) for x in changes], note="Current is based on latest observed direct IDs; cluster coverage and detail freshness are not guaranteed")
+        current=current, current_status=current_status, scan_at=scan_at,
+        verified_at=verified_at, history=history,
+        changes=[dict(x) for x in changes], note="Live carousel is retained for at most 180 seconds after verification; intermediate scans are not proof of disappearance")
 
 def publish(payload):
     data=json.dumps(payload,ensure_ascii=False,separators=(",",":"))

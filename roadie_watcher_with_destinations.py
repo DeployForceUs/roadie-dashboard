@@ -364,6 +364,10 @@ def main():
     log("🚀 FAST XML ONLY watcher (lazy sessions, no cleanup).")
 
     seen=set()
+    # Temporary backoff for direct markers that unexpectedly open a carousel.
+    # Keep map sightings and price tracking independent of this throttle.
+    direct_marker_retry_after = {}
+    DIRECT_MARKER_RETRY_SECONDS = 120
     saved_card_sigs=set()          # глобальный дедуп по raw‑XML
     processed_clusters=set()
     cycle=0
@@ -401,7 +405,16 @@ def main():
 
         # подготовим синглы
         id_nodes = [ {"desc":d, "bounds":b} for (d,b) in ids ]
-        new_ids  = [e for e in id_nodes if (e["desc"],e["bounds"]) not in seen]
+        now_mono = time.monotonic()
+        direct_marker_retry_after = {
+            marker: deadline for marker, deadline in direct_marker_retry_after.items()
+            if deadline > now_mono
+        }
+        new_ids = [
+            e for e in id_nodes
+            if (e["desc"], e["bounds"]) not in seen
+            and e["desc"] not in direct_marker_retry_after
+        ]
 
         clusters_bounds = tuple(sorted(b for _, b in clusters_list))
         singles_bounds  = tuple(sorted(b for _, b in ids))
@@ -748,7 +761,14 @@ def main():
 
                 heartbeat("DETAIL")
                 if observed_screen(detail_sess) is not Screen.DETAIL:
-                    log("⛔ expected DETAIL; skip direct gig and recover next cycle")
+                    # A direct map marker can open a carousel instead of DETAIL.
+                    # Reopening it every cycle stresses the app without progress.
+                    # This is a bounded retry, not permanent suppression.
+                    direct_marker_retry_after[gid] = (
+                        time.monotonic() + DIRECT_MARKER_RETRY_SECONDS
+                    )
+                    log(f"⛔ expected DETAIL for {gid}; retry after "
+                        f"{DIRECT_MARKER_RETRY_SECONDS}s; recover next cycle")
                     break
                 seen.add((gid,e["bounds"]))
                 if maybe_save_detail(detail_sess, f"{gid}_info.csv",

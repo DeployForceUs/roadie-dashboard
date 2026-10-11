@@ -16,7 +16,7 @@ import os, time, subprocess, xml.etree.ElementTree as ET, re, sys, shutil, hashl
 from roadie_store import db_open, parse as store_parse, fields as store_fields, CITY, ROUTE, DELIVERIES, key as gig_key, extract_cargo
 from datetime import datetime
 from time import perf_counter
-from roadie_ui_guard import Screen, classify_xml, allowed_action
+from roadie_ui_guard import Screen, classify_xml, allowed_action, refresh_bounds
 from roadie_capture import capture_xml, CaptureError
 
 # ===================== ТЮНЕРЫ =====================
@@ -384,20 +384,17 @@ def main():
         # coordinate unless the control is present in a verified map XML.
         probe_path = os.path.join(TMP_DIR, 'screen_probe.xml')
         try:
-            probe_root = ET.parse(probe_path).getroot()
-            refresh_nodes = [n for n in probe_root.iter()
-                             if n.get("resource-id", "").split("/")[-1] == "refresh_button"
-                             and n.get("bounds", "") not in ("", "[0,0][0,0]")]
-        except (OSError, ET.ParseError):
-            refresh_nodes = []
-        if not refresh_nodes:
+            verified_bounds = refresh_bounds(open(probe_path, encoding="utf-8").read())
+        except (OSError, UnicodeError):
+            verified_bounds = None
+        if not verified_bounds:
             log("⚠️ MAP verified but refresh unavailable; passive observation only (not verified fresh)")
             heartbeat("MAP_NO_REFRESH")
             # Without a refresh action, a map marker may be stale.
             # Do not publish it as a fresh scan or repeatedly open it.
             time.sleep(2.0)
             continue
-        rx, ry = get_bounds_center(refresh_nodes[0].get("bounds", ""))
+        rx, ry = get_bounds_center(verified_bounds)
         tap(rx, ry); log(f"🔄 cycle {cycle}: verified refresh"); tick("after REFRESH tap")
         time.sleep(SLEEP_AFTER_REFRESH)
 

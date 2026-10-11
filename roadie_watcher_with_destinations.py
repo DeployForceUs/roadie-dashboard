@@ -12,7 +12,7 @@
 # - Для одиночных также зеркалим detail в сессию (gid.xml) и сохраняем оттуда.
 # =============================================================================
 
-import os, time, subprocess, xml.etree.ElementTree as ET, re, sys, shutil, hashlib, sqlite3
+import os, time, subprocess, xml.etree.ElementTree as ET, re, sys, shutil, hashlib, sqlite3, json
 from roadie_store import db_open, parse as store_parse, fields as store_fields, CITY, ROUTE, DELIVERIES, key as gig_key, extract_cargo
 from datetime import datetime
 from time import perf_counter
@@ -62,6 +62,19 @@ LOG_BASE  = os.path.join(DOWNLOADS, "roadie_logs_nosleepy_economy")
 TMP_DIR   = os.path.join(LOG_BASE, "_tmp")
 os.makedirs(LOG_BASE, exist_ok=True)
 os.makedirs(TMP_DIR, exist_ok=True)
+
+HEARTBEAT_FILE = os.path.join(TMP_DIR, "watcher_heartbeat.json")
+
+def heartbeat(state: str):
+    """Successful activity only; watchdog reads this file without ADB."""
+    payload = {"timestamp": time.time(), "pid": os.getpid(), "state": state}
+    temp = HEARTBEAT_FILE + f".{os.getpid()}.tmp"
+    try:
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(temp, HEARTBEAT_FILE)
+    except OSError as exc:
+        print(f"heartbeat write failed: {exc}", flush=True)
 
 def log(msg: str):
     ts = datetime.now().strftime("%H:%M:%S")
@@ -127,6 +140,7 @@ def recover_to_map() -> bool:
             return False
         screen = observed_screen(probe)
         if screen is Screen.MAP:
+            heartbeat("MAP")
             return True
         if screen is Screen.DETAIL and allowed_action(screen, 'close_detail'):
             log('↩️ DETAIL verified; returning toward MAP')
@@ -373,6 +387,7 @@ def main():
             log("⛔ refresh returned non-MAP screen; no map_scans write")
             time.sleep(1.0)
             continue
+        heartbeat("MAP_REFRESHED")
         elements = parse_ui(start_tmp); tick("after START parsed")
         log(f"📄 parsed start: {len(elements)} elements")
 
@@ -637,6 +652,7 @@ def main():
                 except Exception as e:
                     log(f"⚠️ mirror error: {e}")
 
+                heartbeat("CAROUSEL")
                 c1, t1, raw1 = wait_pos(first_xml_sess)
                 if c1 and t1:
                     map_needs_rescan = True
@@ -667,6 +683,7 @@ def main():
                             break
                         cur_xml_sess = os.path.join(session_dir, f"carousel_{i:02d}.xml")
                         shutil.copy2(cur_xml_tmp, cur_xml_sess)
+                        heartbeat("CAROUSEL")
                         positions = all_positions(cur_xml_sess)
                         active_now = visible_position(cur_xml_sess)
                         if active_now:
@@ -729,6 +746,7 @@ def main():
                 except Exception as ex:
                     log(f"⚠️ mirror error: {ex}")
 
+                heartbeat("DETAIL")
                 if observed_screen(detail_sess) is not Screen.DETAIL:
                     log("⛔ expected DETAIL; skip direct gig and recover next cycle")
                     break
@@ -763,6 +781,7 @@ def main():
                 back(); time.sleep(SLEEP_AFTER_BACK)
 
         gig_db.close()
+        heartbeat("CYCLE_DONE")
         log(f"✅ cycle {cycle} done | saved_any={saved_any}")
         time.sleep(0.5)
 

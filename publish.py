@@ -128,7 +128,7 @@ def make_payload():
                     if (scanned is not None and prior_scan["cluster_count"] == 1
                             and 0 <= (observed-scanned).total_seconds() <= 120
                             and 0 <= (now-observed).total_seconds() <= 180
-                            and 0 <= (latest-observed).total_seconds() <= 120
+                            and abs((latest-observed).total_seconds()) <= 120
                             and len(cards) == snapshot["expected_cards"]
                             and len({c["key"] for c in cards}) == len(cards)):
                         indexed = {h["key"]:h for h in history}
@@ -143,7 +143,7 @@ def make_payload():
                             current.append(dict(key=c["key"],price=price,
                                 hour=round(price*60/mins,2),mile=round(price/miles,2),
                                 miles=miles,deliveries=c["deliveries"],minutes=int(mins),
-                                city=h.get("city","Unknown"),fit=h.get("fit","unknown"),
+                                city=h.get("city","Unknown"),fit=("no" if "NOT A FIT" in str(c.get("fit","")).upper() else h.get("fit","unknown")),
                                 total_weight=h.get("total_weight"),
                                 heaviest_item=h.get("heaviest_item"),
                                 max_dimension=h.get("max_dimension"),

@@ -55,6 +55,13 @@ def stop_child(child):
         child.wait(timeout=5)
 
 
+def restart_budget_exhausted(history, now, max_restarts=MAX_RESTARTS, window=RESTART_WINDOW):
+    """Expire old failures and decide whether another start is permitted."""
+    while history and now - history[0] > window:
+        history.popleft()
+    return len(history) >= max_restarts
+
+
 def main():
     if not WATCHER.is_file():
         sys.exit("Watcher script not found: " + str(WATCHER))
@@ -64,9 +71,7 @@ def main():
     try:
         while True:
             now = time.time()
-            while history and now - history[0] > RESTART_WINDOW:
-                history.popleft()
-            if len(history) >= MAX_RESTARTS:
+            if restart_budget_exhausted(history, now):
                 notice("ROADIE ALERT: 3 restarts in 15 minutes. Supervisor stopped; manual inspection required.")
                 return 2
             child = subprocess.Popen([sys.executable, "-u", str(WATCHER)], cwd=str(BASE))

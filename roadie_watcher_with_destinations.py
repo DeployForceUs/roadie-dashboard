@@ -380,7 +380,25 @@ def main():
             log("⛔ cannot confirm MAP; defer cycle without refresh or DB scan")
             time.sleep(2.0)
             continue
-        tap(REFRESH_X, REFRESH_Y); log(f"🔄 cycle {cycle}: refresh"); tick("after REFRESH tap")
+        # A valid MAP can lack refresh_button. Never tap a hard-coded
+        # coordinate unless the control is present in a verified map XML.
+        probe_path = os.path.join(TMP_DIR, 'screen_probe.xml')
+        try:
+            probe_root = ET.parse(probe_path).getroot()
+            refresh_nodes = [n for n in probe_root.iter()
+                             if n.get("resource-id", "").split("/")[-1] == "refresh_button"
+                             and n.get("bounds", "") not in ("", "[0,0][0,0]")]
+        except (OSError, ET.ParseError):
+            refresh_nodes = []
+        if not refresh_nodes:
+            log("⚠️ MAP verified but refresh unavailable; passive observation only (not verified fresh)")
+            heartbeat("MAP_NO_REFRESH")
+            # Without a refresh action, a map marker may be stale.
+            # Do not publish it as a fresh scan or repeatedly open it.
+            time.sleep(2.0)
+            continue
+        rx, ry = get_bounds_center(refresh_nodes[0].get("bounds", ""))
+        tap(rx, ry); log(f"🔄 cycle {cycle}: verified refresh"); tick("after REFRESH tap")
         time.sleep(SLEEP_AFTER_REFRESH)
 
         start_tmp = os.path.join(TMP_DIR, "start.xml")

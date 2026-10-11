@@ -106,7 +106,11 @@ def make_payload():
                         miles=miles,deliveries=0,minutes=int(mins),
                         city=str(d.get("To","Неизвестно")).replace(", FL",""),
                         fit="unknown", total_weight=c_weight, heaviest_item=c_heaviest,
-                        max_dimension=c_dim, total_items=c_items))
+                        max_dimension=c_dim, total_items=c_items,
+                        schedule=dict(pickup_time=d.get("Pickup Time"),
+                                      pickup_date=d.get("Pickup Date"),
+                                      complete_by_time=d.get("Complete By Time"),
+                                      complete_by_day=d.get("Complete By Day"))))
                 if scan["cluster_count"]:
                     current_status = "partial_clusters"
                 elif missing:

@@ -1,5 +1,6 @@
 """Offline tests for the macOS test watchdog. No watcher or ADB is launched."""
 import json
+from collections import deque
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,24 @@ import roadie_test_watchdog as wd
 
 
 class WatchdogTests(unittest.TestCase):
+    def test_restart_budget_allows_fewer_than_three(self):
+        history = deque([100, 110])
+        self.assertFalse(wd.restart_budget_exhausted(history, 120))
+
+    def test_restart_budget_stops_after_three(self):
+        history = deque([100, 110, 120])
+        self.assertTrue(wd.restart_budget_exhausted(history, 121))
+
+    def test_restart_budget_expires_old_failures(self):
+        history = deque([100, 110, 120])
+        self.assertFalse(wd.restart_budget_exhausted(history, 1001))
+        self.assertEqual(list(history), [])
+
+    def test_restart_budget_window_boundary(self):
+        history = deque([100, 110, 120])
+        self.assertTrue(wd.restart_budget_exhausted(history, 1000))
+        self.assertFalse(wd.restart_budget_exhausted(history, 1001))
+
     def test_missing_heartbeat_uses_start_time(self):
         with tempfile.TemporaryDirectory() as d:
             with patch.object(wd, "HEARTBEAT", Path(d) / "missing.json"):

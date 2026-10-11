@@ -23,6 +23,12 @@ def classify_xml(xml_text: str) -> Screen:
         "position_in_stack" in ids or "gig_summary_card" in ids
     ):
         return Screen.CAROUSEL
+    # The Roadie map can remain mounted without a refresh control.
+    # Require both the map container and Google Map accessibility node;
+    # menu_button alone is not sufficient. Carousel/detail take precedence.
+    descriptions = {n.get("content-desc", "") for n in root.iter()}
+    if ("fragment_map_mapview" in ids and "Google Map" in descriptions):
+        return Screen.MAP
     if {"refresh_button", "menu_button"} <= ids:
         return Screen.MAP
     return Screen.UNKNOWN

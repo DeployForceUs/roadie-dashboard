@@ -107,8 +107,8 @@ def make_payload():
                     current_status = "partial_details"
                 else:
                     current_status = "map_direct_only"
-    # Prefer a verified full-carousel snapshot only when it belongs to the latest map observation.
-    # Do not fall back to old snapshots: stale gigs must never appear as live.
+    # Associate a verified carousel with the map scan preceding it, not the newest map scan.
+    # Require fresh observation and a bounded scan-to-carousel interval.
     with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5) as db:
         db.row_factory = sqlite3.Row
         tables = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -119,11 +119,16 @@ def make_payload():
             if snapshot:
                 try:
                     observed = dt.datetime.fromisoformat(snapshot["observed_at"])
-                    scanned = dt.datetime.fromisoformat(scan_at)
+                    prior_scan = db.execute("SELECT observed_at,cluster_count FROM map_scans WHERE observed_at <= ? ORDER BY observed_at DESC LIMIT 1", (snapshot["observed_at"],)).fetchone()
+                    scanned = dt.datetime.fromisoformat(prior_scan["observed_at"]) if prior_scan else None
+                    latest = dt.datetime.fromisoformat(scan_at)
+                    now = dt.datetime.now()
                     cards = json.loads(snapshot["cards_json"])
-                    # Map is recorded before carousel processing. Accept only a snapshot
-                    # completed within the same short scan cycle, never an older one.
-                    if (0 <= (observed-scanned).total_seconds() <= 120
+                    # Never label a stale or unanchored snapshot as current.
+                    if (scanned is not None and prior_scan["cluster_count"] == 1
+                            and 0 <= (observed-scanned).total_seconds() <= 120
+                            and 0 <= (now-observed).total_seconds() <= 180
+                            and 0 <= (latest-observed).total_seconds() <= 120
                             and len(cards) == snapshot["expected_cards"]
                             and len({c["key"] for c in cards}) == len(cards)):
                         indexed = {h["key"]:h for h in history}

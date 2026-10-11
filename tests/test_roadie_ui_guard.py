@@ -23,6 +23,15 @@ class ScreenTests(unittest.TestCase):
         self.assertFalse(allowed_action(Screen.UNKNOWN,'back_to_map'))
     def test_carousel_cannot_refresh(self):
         self.assertFalse(allowed_action(Screen.CAROUSEL,'refresh'))
+    def test_7405_detail_not_mistaken_for_empty_map(self):
+        sample = '<hierarchy><node resource-id="pkg:id/close_details" text="$74.05"/><node resource-id="pkg:id/details_container_scroll" text="27 deliveries"/></hierarchy>'
+        self.assertEqual(classify_xml(sample), Screen.DETAIL)
+        self.assertFalse(allowed_action(classify_xml(sample), 'refresh'))
+
+    def test_transition_unknown_cannot_refresh(self):
+        self.assertEqual(classify_xml(xml('gig_card_pager')), Screen.UNKNOWN)
+        self.assertFalse(allowed_action(Screen.UNKNOWN, 'refresh'))
+
     def test_map_can_refresh(self):
         self.assertTrue(allowed_action(Screen.MAP,'refresh'))
 

@@ -1,47 +1,64 @@
-# Roadie Watcher → SQLite → Publisher → Web UI
+# Roadie Watcher → SQLite → GitHub Publisher → Web dashboard
 
-> **Status:** conceptual architecture diagram, 2026-10-11. Some publisher HTTP endpoints and precise SQL names in the originally rendered illustration were *illustrative*, not verified against source code. Do not treat them as implementation contracts.
-
-The diagram below is version-controlled Mermaid. The separately generated PNG infographic was not committed as a binary image; Mermaid renders directly on GitHub.
+Source-verified architecture (2026-10-11). Sources: `publish.py`, `index.html` on `main`; Watcher single-card work remains on `fix/single-marker-carousel-cooldown`.
 
 ```mermaid
 flowchart TD
-    A["Watcher cycle: capture fresh Android UI XML via ADB"] --> B{"Verified screen type?"}
-    B -->|MAP| C["Parse map marker IDs / clusters"]
-    B -->|CAROUSEL| R["Existing open card: recover to MAP safely"]
-    B -->|DETAIL| R
-    B -->|UNKNOWN / rejected XML| U["Log rejected XML; no blind tap, swipe or DB scan"]
+    A["Watcher: ADB UI XML capture"] --> B{"Verified Android screen?"}
+    B -->|MAP| C["Read direct map IDs and cluster count"]
+    B -->|CAROUSEL or DETAIL| R["Verified Back / recovery toward MAP"]
+    B -->|UNKNOWN or rejected XML| U["Save rejected XML; no blind tap or scan"]
     R --> A
     U --> A
-    C --> D{"Any marker or cluster?"}
-    D -->|No| E["Remain on MAP; wait for next scan"]
+    C --> D{"Map markers?"}
+    D -->|No| E["Wait for next map scan"]
     E --> A
     D -->|Yes| F["Tap verified marker or cluster"]
-    F --> G["Capture fresh XML and classify"]
-    G --> H{"CAROUSEL?"}
-    H -->|No| U
-    H -->|Yes| I["Parse FIRST gig_summary_card: price, route, miles, minutes, deliveries, fit"]
-    I --> J["Compute gig_key (e.g. 76_11)"]
-    J --> K{"Destination already in SQLite?"}
-    K -->|No| L["Open Details if safe; capture XML; parse destination; return and verify"]
-    K -->|Yes| M["Reuse known destination"]
-    L --> N["Persist/merge gig data in SQLite"]
-    M --> N
-    N --> O{"Verified position_in_stack and total > 1?"}
-    O -->|Yes| P["Swipe to next verified card; repeat capture and processing"]
-    P --> I
-    O -->|No / unverified| Q["No speculative swipe; recover to MAP"]
-    Q --> A
-    N -.-> S["Publisher: separate process reads SQLite"]
-    S --> T["Publisher exposes/transforms data for web consumer — verify exact mechanism in code"]
-    T --> V["Web page reads published data and displays gigs"]
+    F --> G["Capture and classify fresh XML"]
+    G -->|CAROUSEL| H["Parse first gig_summary_card"]
+    G -->|UNKNOWN| U
+    H --> I["gig_key from miles + deliveries; price, minutes, fit"]
+    I --> J{"Destination already known in gigs table?"}
+    J -->|No| K["Open Details; capture XML; parse destination; verify return"]
+    J -->|Yes| L["Reuse destination"]
+    K --> M["Persist gigs / changes and related observations in SQLite"]
+    L --> M
+    M --> N{"Verified carousel count > 1?"}
+    N -->|Yes| O["Swipe verified next card and process"]
+    O --> H
+    N -->|No / unknown| P["No speculative swipe; return toward MAP"]
+    P --> A
+    C -.-> MS[("SQLite: map_scans")]
+    M -.-> DB[("SQLite: gigs, changes; optional direct_gig_details / verified_carousel_snapshots")]
+    MS --> PUB["publish.py: make_payload() every 60s"]
+    DB --> PUB
+    PUB --> HIST["history: valid gigs with last_seen, price, miles, minutes, destination, cargo"]
+    PUB --> CUR["current: latest map direct IDs + direct_gig_details; optionally verified recent cluster carousel"]
+    PUB --> CH["changes: latest 250 change rows"]
+    HIST --> JSON["JSON: generated_at, current, current_status, scan_at, history, changes, note"]
+    CUR --> JSON
+    CH --> JSON
+    JSON --> GH["gh api PUT repos/DeployForceUs/roadie-dashboard/contents/data.json"]
+    GH --> STATIC["Repository-hosted data.json alongside index.html"]
+    STATIC --> WEB["Browser fetch('./data.json?ts='+Date.now(), cache:'no-store') every 60s"]
+    WEB --> UI["Dashboard tabs: Now=current / History=history; sorting and fit filter"]
 ```
 
-## Important evidence and limitations
+## Exact Publisher contract verified in source
 
-- Real single gig XML contained `gig_card_pager` and `gig_summary_card` but **no** `position_in_stack`. The patched parser synthesizes position `1/1` for that case; do **not** interpret that as proof there are no hidden cards.
-- Real fixture parsed as `Screen.CAROUSEL`, key `76_11`, 76 miles, 190 minutes, 11 deliveries, price 150.30.
-- After Back, Roadie sometimes displays a blank map without Refresh; watcher rejected screen as UNKNOWN until operator interacted with app. No automatic fix yet.
-- Actual single-card end-to-end handling, Details lookup, cluster traversal, Publisher interface and final web fetch route must be confirmed in code/live logs before claiming verified.
+- `publish.py` uses `DB = ~/Downloads/roadie_gigs.sqlite3`, opens SQLite `mode=ro`, and runs `make_payload()` then `publish()` every `INTERVAL = 60` seconds.
+- `history` comes from `gigs` (valid numeric price, miles, minutes), sorted by `last_seen`; `changes` reads the newest 250 entries.
+- `current` starts with the latest `map_scans.direct_ids_json`, matched against `direct_gig_details.details_json`. Missing details yield `partial_details`; clusters yield `partial_clusters`; complete direct-only maps yield `map_direct_only`.
+- A `verified_carousel_snapshots` record can replace `current` only if it is complete, unique, anchored to a preceding scan with `cluster_count == 1`, within a 120-second scan/carousel interval and 180 seconds of now, and within 120 seconds of the latest map scan. Then `current_status='verified_carousel'`.
+- `publish()` serializes the payload and runs GitHub CLI `gh api --method PUT repos/DeployForceUs/roadie-dashboard/contents/data.json` using base64 JSON and the previous blob SHA. **No Flask/FastAPI/local HTTP server.**
+- `index.html` fetches `./data.json?ts=...` with `cache:'no-store'` immediately and every 60 seconds. It renders `current` for **Now** and `history` for **History**; if fetch fails, it shows demo data.
+- GitHub hosting/deployment details (e.g. GitHub Pages URL) are not established by these files alone.
+
+## Current Watcher caveats
+
+- A real single card can have `gig_card_pager` and `gig_summary_card` but no `position_in_stack`; patched parser synthesizes `1/1` solely for parsing, not proof of carousel completeness.
+- On 2026-10-11 after Back from CAROUSEL, Roadie showed an empty map without Refresh; watcher rejected UNKNOWN until manual UI interaction. Not fixed.
+- Single-card live end-to-end processing, database writes and resulting `current` payload are not yet confirmed.
+- **Integration risk:** `current` for direct markers depends on `direct_gig_details` keyed by map gig ID, whereas `gigs` uses `gig_key` like `76_11`. The patch must be checked for maintaining both records. Do not assume a parsed single summary automatically appears in Now.
 
 See [WATCHER_STATE.md](WATCHER_STATE.md) and [CHANGELOG.md](../CHANGELOG.md).

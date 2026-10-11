@@ -5,7 +5,7 @@ The watcher must separately guard the refresh action; classification alone
 must never authorize a blind coordinate tap.
 """
 import unittest
-from roadie_ui_guard import Screen, classify_xml
+from roadie_ui_guard import Screen, classify_xml, refresh_bounds
 
 def xml(*nodes):
     return '<hierarchy>' + ''.join(
@@ -45,6 +45,31 @@ class MapWithoutRefreshTests(unittest.TestCase):
     def test_menu_only_is_not_map(self):
         payload = xml(("com.roadie.drive.android.app:id/menu_button", ""))
         self.assertIs(classify_xml(payload), Screen.UNKNOWN)
+
+    def test_refresh_missing_returns_no_coordinates(self):
+        payload = xml(
+            ("com.roadie.drive.android.app:id/fragment_map_mapview", ""),
+            ("", "Google Map"),
+            ("", "76510555"),
+        )
+        self.assertIsNone(refresh_bounds(payload))
+
+    def test_refresh_with_valid_bounds(self):
+        payload = (
+            '<hierarchy>'
+            '<node resource-id="com.roadie.drive.android.app:id/fragment_map_mapview" />'
+            '<node content-desc="Google Map" />'
+            '<node resource-id="com.roadie.drive.android.app:id/refresh_button" bounds="[40,2300][200,2500]" />'
+            '</hierarchy>'
+        )
+        self.assertEqual(refresh_bounds(payload), "[40,2300][200,2500]")
+
+    def test_refresh_without_bounds_must_not_be_tapped(self):
+        payload = xml(
+            ("com.roadie.drive.android.app:id/refresh_button", ""),
+            ("com.roadie.drive.android.app:id/menu_button", ""),
+        )
+        self.assertIsNone(refresh_bounds(payload))
 
     def test_existing_refresh_map(self):
         payload = xml(

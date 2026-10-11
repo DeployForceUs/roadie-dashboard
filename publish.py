@@ -170,7 +170,7 @@ def make_payload():
         tables = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "verified_carousel_snapshots" in tables:
             for stamp, expected, raw in db.execute(
-                "SELECT observed_at,expected_cards,cards_json FROM verified_carousel_snapshots ORDER BY id DESC LIMIT 200"
+                "SELECT observed_at,expected_cards,cards_json FROM verified_carousel_snapshots ORDER BY id DESC LIMIT 2000"
             ):
                 try:
                     cards = json.loads(raw)

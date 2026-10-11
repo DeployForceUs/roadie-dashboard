@@ -107,6 +107,47 @@ def make_payload():
                     current_status = "partial_details"
                 else:
                     current_status = "map_direct_only"
+    # Prefer a verified full-carousel snapshot only when it belongs to the latest map observation.
+    # Do not fall back to old snapshots: stale gigs must never appear as live.
+    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5) as db:
+        db.row_factory = sqlite3.Row
+        tables = {x[0] for x in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "verified_carousel_snapshots" in tables and scan_at:
+            snapshot = db.execute(
+                "SELECT observed_at,expected_cards,cards_json FROM verified_carousel_snapshots ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if snapshot:
+                try:
+                    observed = dt.datetime.fromisoformat(snapshot["observed_at"])
+                    scanned = dt.datetime.fromisoformat(scan_at)
+                    cards = json.loads(snapshot["cards_json"])
+                    # Map is recorded before carousel processing. Accept only a snapshot
+                    # completed within the same short scan cycle, never an older one.
+                    if (0 <= (observed-scanned).total_seconds() <= 120
+                            and len(cards) == snapshot["expected_cards"]
+                            and len({c["key"] for c in cards}) == len(cards)):
+                        indexed = {h["key"]:h for h in history}
+                        current = []
+                        for c in cards:
+                            h = indexed.get(c["key"], {})
+                            price = float(c["price"])
+                            miles = float(c["miles"])
+                            mins = float(c["minutes"])
+                            if miles <= 0 or mins <= 0:
+                                continue
+                            current.append(dict(key=c["key"],price=price,
+                                hour=round(price*60/mins,2),mile=round(price/miles,2),
+                                miles=miles,deliveries=c["deliveries"],minutes=int(mins),
+                                city=h.get("city","Unknown"),fit=h.get("fit","unknown"),
+                                total_weight=h.get("total_weight"),
+                                heaviest_item=h.get("heaviest_item"),
+                                max_dimension=h.get("max_dimension"),
+                                total_items=h.get("total_items"),
+                                first_seen=h.get("first_seen"),
+                                last_seen=normalize(snapshot["observed_at"])))
+                        current_status = "verified_carousel" if len(current)==len(cards) else "partial_details"
+                except (ValueError,TypeError,KeyError,OverflowError):
+                    pass
     return dict(generated_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         current=current, current_status=current_status, scan_at=scan_at, history=history,
         changes=[dict(x) for x in changes], note="Current is based on latest observed direct IDs; cluster coverage and detail freshness are not guaranteed")

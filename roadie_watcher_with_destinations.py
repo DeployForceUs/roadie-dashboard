@@ -373,6 +373,8 @@ def main():
     cycle=0
     last_map_sig=None
     carousel_lastN = {}            # мониторинг N (сколько карт в карусели) по bounds
+    marker_last_opened = {}        # periodic revisit even if marker bounds unchanged
+    MARKER_REVISIT_SECONDS = 120
 
     while True:
         cycle+=1
@@ -387,26 +389,23 @@ def main():
             verified_bounds = refresh_bounds(open(probe_path, encoding="utf-8").read())
         except (OSError, UnicodeError):
             verified_bounds = None
-        if not verified_bounds:
-            log("⚠️ MAP verified but refresh unavailable; passive observation only (not verified fresh)")
+        if verified_bounds:
+            rx, ry = get_bounds_center(verified_bounds)
+            tap(rx, ry); log(f"🔄 cycle {cycle}: verified refresh"); tick("after REFRESH tap")
+            time.sleep(SLEEP_AFTER_REFRESH)
+        else:
+            log("ℹ️ MAP without Refresh: inspect visible markers without tap")
             heartbeat("MAP_NO_REFRESH")
-            # Without a refresh action, a map marker may be stale.
-            # Do not publish it as a fresh scan or repeatedly open it.
-            time.sleep(2.0)
-            continue
-        rx, ry = get_bounds_center(verified_bounds)
-        tap(rx, ry); log(f"🔄 cycle {cycle}: verified refresh"); tick("after REFRESH tap")
-        time.sleep(SLEEP_AFTER_REFRESH)
 
         start_tmp = os.path.join(TMP_DIR, "start.xml")
         if not dump_xml_checked(start_tmp):
             log("⚠️ start dump failed, skip"); time.sleep(0.35); continue
 
         if observed_screen(start_tmp) is not Screen.MAP:
-            log("⛔ refresh returned non-MAP screen; no map_scans write")
+            log("⛔ observed non-MAP screen; no map_scans write")
             time.sleep(1.0)
             continue
-        heartbeat("MAP_REFRESHED")
+        heartbeat("MAP_REFRESHED" if verified_bounds else "MAP_OBSERVED_NO_REFRESH")
         elements = parse_ui(start_tmp); tick("after START parsed")
         log(f"📄 parsed start: {len(elements)} elements")
 
@@ -428,7 +427,8 @@ def main():
         new_ids = [
             e for e in id_nodes
             if (e["desc"], e["bounds"]) not in seen
-            and e["desc"] not in direct_marker_retry_after
+            or (now_mono - marker_last_opened.get(e["desc"], -1e12) >= MARKER_REVISIT_SECONDS
+                and e["desc"] not in direct_marker_retry_after)
         ]
 
         clusters_bounds = tuple(sorted(b for _, b in clusters_list))
@@ -778,6 +778,7 @@ def main():
                 gid=e["desc"]
                 x,y=get_bounds_center(e["bounds"])
                 log(f"👉 open gig {gid} at ({x},{y})")
+                marker_last_opened[gid] = time.monotonic()
                 tap(x,y); time.sleep(SLEEP_AFTER_TAP)
 
                 # Read the first summary BEFORE any swipe or detail tap.

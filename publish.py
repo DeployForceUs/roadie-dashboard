@@ -31,6 +31,10 @@ def make_payload():
         db.row_factory = sqlite3.Row
         cols = {row[1] for row in db.execute("PRAGMA table_info(gigs)")}
         cargo_select = ",total_weight_lbs,max_weight_lbs,max_dimension_in,max_dimension_raw,total_items" if "total_weight_lbs" in cols else ""
+        schedules = {}
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gig_schedules'").fetchone():
+            for item in db.execute("SELECT gig_key,pickup_time,pickup_date,complete_by_time,complete_by_day,observed_at FROM gig_schedules"):
+                schedules[item["gig_key"]] = dict(item)
         records = db.execute(f"SELECT gig_key,miles,deliveries,destination,last_price,last_minutes,fit,last_seen,first_seen{cargo_select} FROM gigs").fetchall()
         changes = db.execute("SELECT seen_at,gig_key,event,old_price,new_price FROM changes ORDER BY id DESC LIMIT 250").fetchall()
     history = []
@@ -55,7 +59,9 @@ def make_payload():
             minutes=int(mins), city=(r["destination"] or "Неизвестно").replace(", FL",""),
             fit=fit, total_weight=total_weight, heaviest_item=heaviest_item,
             max_dimension=max_dim, total_items=total_items,
-            last_seen=normalize(r["last_seen"]), first_seen=normalize(r["first_seen"])))
+            last_seen=normalize(r["last_seen"]), first_seen=normalize(r["first_seen"]),
+            schedule=({k:v for k,v in schedules[r["gig_key"]].items() if k != "gig_key"}
+                      if r["gig_key"] in schedules else None)))
     history.sort(key=lambda x:x["last_seen"] or "",reverse=True)
     # Current view comes from the last observed map, never from historical gigs alone.
     # A direct map ID must match a captured detail; clusters require a separate
@@ -149,7 +155,8 @@ def make_payload():
                                 max_dimension=h.get("max_dimension"),
                                 total_items=h.get("total_items"),
                                 first_seen=h.get("first_seen"),
-                                last_seen=normalize(snapshot["observed_at"])))
+                                last_seen=normalize(snapshot["observed_at"]),
+                                schedule=h.get("schedule")))
                         current_status = "verified_carousel" if len(current)==len(cards) else "partial_details"
                 except (ValueError,TypeError,KeyError,OverflowError):
                     pass

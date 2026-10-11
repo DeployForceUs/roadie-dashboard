@@ -62,3 +62,10 @@ flowchart TD
 - **Integration risk:** `current` for direct markers depends on `direct_gig_details` keyed by map gig ID, whereas `gigs` uses `gig_key` like `76_11`. The patch must be checked for maintaining both records. Do not assume a parsed single summary automatically appears in Now.
 
 See [WATCHER_STATE.md](WATCHER_STATE.md) and [CHANGELOG.md](../CHANGELOG.md).
+
+
+## Product requirement — canonical live Now view (operator clarification, 2026-10-11)
+
+**Required behavior (not current implementation):** The map circle/marker ID is an internal navigation handle only. The **Now** tab must display the actual gig money and details extracted from all cards in the **latest completed verified pass**, regardless of marker IDs. A completed pass atomically replaces the previous live list, including when zero gigs are present. An incomplete/UNKNOWN pass must never silently overwrite the latest completed pass or masquerade as fresh. The dashboard should clearly expose pass timestamp and validity/freshness. Historical data is independent of current availability.
+
+**Implementation mismatch confirmed in `publish.py`:** Current `make_payload()` constructs `current` from latest `map_scans.direct_ids_json` joined to `direct_gig_details` by circle ID, with a special recent verified-carousel override. This is legacy behavior and does **not** meet the stated product requirement. Do not describe it as the desired architecture. A future coordinated Watcher/SQLite/Publisher change should persist a verified, complete pass snapshot of actual gigs and make Publisher read that snapshot. Do not change running Publisher or Watcher without operator approval.

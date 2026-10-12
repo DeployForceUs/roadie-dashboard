@@ -860,6 +860,7 @@ def main():
                             log("🔄 card count/position changed; rescan next cycle")
                             break
                         if pos[0] <= last_position:
+                            previous_xml = cur
                             stall += 1
                             if stall >= MAX_STALL_SWIPES:
                                 cycle_ambiguous = True

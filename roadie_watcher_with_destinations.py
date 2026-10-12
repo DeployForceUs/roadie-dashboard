@@ -12,10 +12,12 @@
 # - Для одиночных также зеркалим detail в сессию (gid.xml) и сохраняем оттуда.
 # =============================================================================
 
-import os, time, subprocess, xml.etree.ElementTree as ET, re, sys, shutil, hashlib, sqlite3
+import os, time, subprocess, xml.etree.ElementTree as ET, re, sys, shutil, hashlib, sqlite3, json
 from roadie_store import db_open, parse as store_parse, fields as store_fields, CITY, ROUTE, DELIVERIES, key as gig_key, extract_cargo
 from datetime import datetime
 from time import perf_counter
+from roadie_ui_guard import Screen, classify_xml, allowed_action
+from roadie_capture import capture_xml, CaptureError
 
 # ===================== ТЮНЕРЫ =====================
 SWIPE_MS             = 220
@@ -61,6 +63,19 @@ TMP_DIR   = os.path.join(LOG_BASE, "_tmp")
 os.makedirs(LOG_BASE, exist_ok=True)
 os.makedirs(TMP_DIR, exist_ok=True)
 
+HEARTBEAT_FILE = os.path.join(TMP_DIR, "watcher_heartbeat.json")
+
+def heartbeat(state: str):
+    """Successful activity only; watchdog reads this file without ADB."""
+    payload = {"timestamp": time.time(), "pid": os.getpid(), "state": state}
+    temp = HEARTBEAT_FILE + f".{os.getpid()}.tmp"
+    try:
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(temp, HEARTBEAT_FILE)
+    except OSError as exc:
+        print(f"heartbeat write failed: {exc}", flush=True)
+
 def log(msg: str):
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
@@ -89,26 +104,54 @@ def back():
     adb("shell input keyevent 4")
     tick("back DONE")
 
+def _adb_checked(args):
+    """Capture-only ADB path: no shell interpolation and no stale success."""
+    return subprocess.run(['adb', *args], capture_output=True, text=True, timeout=25)
+
 def dump_xml(dst_path: str) -> bool:
-    tick(f"dump START → {os.path.basename(dst_path)}")
-    adb("shell uiautomator dump /sdcard/ui_tmp.xml")
-    pull = adb(f"pull /sdcard/ui_tmp.xml {dst_path}")
-    ok = os.path.exists(dst_path) and os.path.getsize(dst_path) > 0
-    tick(f"dump DONE → {os.path.basename(dst_path)} ({os.path.getsize(dst_path) if os.path.exists(dst_path) else 0} bytes)")
-    if not ok:
-        log(f"❌ dump_xml failed → {dst_path} | pull: {pull.strip()[:140]}")
-    return ok
+    try:
+        screen = capture_xml(dst_path, _adb_checked, min_bytes=MIN_XML_BYTES)
+        log(f"📄 verified fresh XML: {os.path.basename(dst_path)} ({screen.value})")
+        return True
+    except (CaptureError, OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        log(f"⚠️ XML capture rejected: {type(exc).__name__}: {exc}")
+        return False
 
 def dump_xml_checked(dst_path: str) -> bool:
-    for i in range(1, DUMP_RETRY+1):
-        t0 = perf_counter()
-        dump_xml(dst_path)
-        sz = os.path.getsize(dst_path) if os.path.exists(dst_path) else 0
-        dt = (perf_counter() - t0)
-        log(f"⏱ dump → {os.path.basename(dst_path)} | try {i}/{DUMP_RETRY} | {dt:.3f}s | {sz} bytes")
-        if sz >= MIN_XML_BYTES:
+    # Transitions can briefly expose UNKNOWN; retry with fresh remote paths.
+    for attempt in range(3):
+        if dump_xml(dst_path):
             return True
-        time.sleep(0.12)
+        time.sleep(0.35 * (attempt + 1))
+    return False
+
+def observed_screen(path: str) -> Screen:
+    try:
+        return classify_xml(open(path, encoding='utf-8').read())
+    except (OSError, UnicodeError):
+        return Screen.UNKNOWN
+
+def recover_to_map() -> bool:
+    """Only press Back on positively identified carousel/detail screens."""
+    probe = os.path.join(TMP_DIR, 'screen_probe.xml')
+    for attempt in range(4):
+        if not dump_xml_checked(probe):
+            log('⛔ cannot verify screen; no tap or Back')
+            return False
+        screen = observed_screen(probe)
+        if screen is Screen.MAP:
+            heartbeat("MAP")
+            return True
+        if screen is Screen.DETAIL and allowed_action(screen, 'close_detail'):
+            log('↩️ DETAIL verified; returning toward MAP')
+            back()
+        elif screen is Screen.CAROUSEL and allowed_action(screen, 'back_to_map'):
+            log('↩️ CAROUSEL verified; returning toward MAP')
+            back()
+        else:
+            log('⛔ UNKNOWN screen; no blind navigation')
+            return False
+        time.sleep(SLEEP_AFTER_BACK)
     return False
 
 def get_bounds_center(bounds: str):
@@ -329,6 +372,10 @@ def main():
 
     while True:
         cycle+=1
+        if not recover_to_map():
+            log("⛔ cannot confirm MAP; defer cycle without refresh or DB scan")
+            time.sleep(2.0)
+            continue
         tap(REFRESH_X, REFRESH_Y); log(f"🔄 cycle {cycle}: refresh"); tick("after REFRESH tap")
         time.sleep(SLEEP_AFTER_REFRESH)
 
@@ -336,6 +383,11 @@ def main():
         if not dump_xml_checked(start_tmp):
             log("⚠️ start dump failed, skip"); time.sleep(0.35); continue
 
+        if observed_screen(start_tmp) is not Screen.MAP:
+            log("⛔ refresh returned non-MAP screen; no map_scans write")
+            time.sleep(1.0)
+            continue
+        heartbeat("MAP_REFRESHED")
         elements = parse_ui(start_tmp); tick("after START parsed")
         log(f"📄 parsed start: {len(elements)} elements")
 
@@ -588,7 +640,10 @@ def main():
 
                 # ── карта 1: дампим TMP → зеркалим в сессию → POS по сессионному файлу
                 first_xml_tmp  = os.path.join(TMP_DIR, "carousel_01_detail.xml")
-                dump_xml_checked(first_xml_tmp)
+                if not dump_xml_checked(first_xml_tmp):
+                    log("⛔ cluster transition unverified; defer until next cycle")
+                    map_needs_rescan = True
+                    break
                 session_dir = ensure_session_for_first_save()
                 first_xml_sess = os.path.join(session_dir, "carousel_01.xml")
                 try:
@@ -597,6 +652,7 @@ def main():
                 except Exception as e:
                     log(f"⚠️ mirror error: {e}")
 
+                heartbeat("CAROUSEL")
                 c1, t1, raw1 = wait_pos(first_xml_sess)
                 if c1 and t1:
                     map_needs_rescan = True
@@ -627,6 +683,7 @@ def main():
                             break
                         cur_xml_sess = os.path.join(session_dir, f"carousel_{i:02d}.xml")
                         shutil.copy2(cur_xml_tmp, cur_xml_sess)
+                        heartbeat("CAROUSEL")
                         positions = all_positions(cur_xml_sess)
                         active_now = visible_position(cur_xml_sess)
                         if active_now:
@@ -671,14 +728,16 @@ def main():
         if new_ids:
             log(f"🎯 singles: total={len(id_nodes)} new={len(new_ids)}")
             for e in new_ids:
-                gid=e["desc"]; seen.add((gid,e["bounds"]))
+                gid=e["desc"]
                 x,y=get_bounds_center(e["bounds"])
                 log(f"👉 open gig {gid} at ({x},{y})")
                 tap(x,y); time.sleep(SLEEP_AFTER_TAP)
 
                 # дамп в TMP → зеркалим в сессию → сохраняем из сессии
                 detail_tmp  = os.path.join(TMP_DIR, f"{gid}_detail.xml")
-                dump_xml_checked(detail_tmp)
+                if not dump_xml_checked(detail_tmp):
+                    log("⛔ direct detail capture failed; do not index or save")
+                    break
                 session_dir = ensure_session_for_first_save()
                 detail_sess = os.path.join(session_dir, f"{gid}.xml")
                 try:
@@ -687,6 +746,11 @@ def main():
                 except Exception as ex:
                     log(f"⚠️ mirror error: {ex}")
 
+                heartbeat("DETAIL")
+                if observed_screen(detail_sess) is not Screen.DETAIL:
+                    log("⛔ expected DETAIL; skip direct gig and recover next cycle")
+                    break
+                seen.add((gid,e["bounds"]))
                 if maybe_save_detail(detail_sess, f"{gid}_info.csv",
                                      ensure_session_for_first_save, saved_card_sigs):
                     saved_any = 1
@@ -717,6 +781,7 @@ def main():
                 back(); time.sleep(SLEEP_AFTER_BACK)
 
         gig_db.close()
+        heartbeat("CYCLE_DONE")
         log(f"✅ cycle {cycle} done | saved_any={saved_any}")
         time.sleep(0.5)
 

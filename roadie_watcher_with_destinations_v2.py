@@ -35,8 +35,8 @@ POS_WAIT_TRIES       = 4
 POS_WAIT_DELAY       = 0.5
 
 REFRESH_X, REFRESH_Y     = 120, 2437
-CAR_SWIPE_X1, CAR_SWIPE_X2 = 900, 200
-CAR_SWIPE_Y               = 2300
+CAR_SWIPE_X1, CAR_SWIPE_X2 = 590, 130
+CAR_SWIPE_Y               = 1266
 
 DUMP_RETRY            = 1
 MIN_XML_BYTES         = 3600
@@ -98,36 +98,6 @@ def swipe(x1:int,y1:int,x2:int,y2:int,ms:int=250):
     tick(f"swipe START → ({x1},{y1})→({x2},{y2}) {ms}ms")
     adb(f"shell input swipe {x1} {y1} {x2} {y2} {ms}")
     tick("swipe DONE")
-
-def swipe_carousel(xml_path: str, ms: int = SWIPE_MS):
-    """Use verified ViewPager bounds instead of device-specific coordinates."""
-    try:
-        root = ET.parse(xml_path).getroot()
-        pagers = [n for n in root.iter()
-                  if n.get("resource-id", "").split("/")[-1] == "gig_card_pager"]
-        if len(pagers) != 1:
-            log("⛔ v2: missing/ambiguous ViewPager; no swipe")
-            return False
-        import re as _re
-        coords = [int(v) for v in _re.findall(r"\d+", pagers[0].get("bounds", ""))]
-        if len(coords) != 4:
-            log("⛔ v2: invalid ViewPager bounds; no swipe")
-            return False
-        left, top, right, bottom = coords
-        width, height = right - left, bottom - top
-        if width < 160 or height < 100:
-            log("⛔ v2: ViewPager too small; no swipe")
-            return False
-        y = top + int(height * 0.48)
-        x1 = left + int(width * 0.82)
-        x2 = left + int(width * 0.18)
-        log(f"📐 v2 pager bounds={left},{top},{right},{bottom}; swipe={x1},{y}→{x2},{y}")
-        swipe(x1, y, x2, y, ms)
-        return True
-    except (OSError, ET.ParseError, ValueError) as exc:
-        log(f"⛔ v2: cannot verify ViewPager geometry: {exc}")
-        return False
-
 
 def back():
     tick("back START")
@@ -620,12 +590,7 @@ def main():
                 # near its price, safely inside the gig_card_pager.
                 cx,cy = get_bounds_center(bounds)
                 if "position_in_stack" in {n.get("resource-id", "").split("/")[-1] for n in root.iter()}:
-                    active_cards = [n for n in root.iter() if n.get('resource-id', '').split('/')[-1] == 'gig_summary_card' and n.get('bounds', '') not in ('', '[0,0][0,0]')]
-                    if len(active_cards) != 1:
-                        log('⛔ v2: ambiguous visible summary; skip destination tap')
-                        return
-                    bx1,by1,bx2,by2 = [int(v) for v in __import__('re').findall(r'\d+', active_cards[0].get('bounds',''))]
-                    tap((bx1+bx2)//2, by1 + (by2-by1)//2)
+                    tap(550, min(2180,cy+205))
                 else:
                     tap(cx, cy)
                 time.sleep(SLEEP_AFTER_TAP)
@@ -757,9 +722,7 @@ def main():
                     i = 1
                     while i < MAX_CARDS and last_position < total:
                         i += 1
-                        if not swipe_carousel(first_xml_sess if i == 2 else cur_xml_sess, SWIPE_MS):
-                            log("⛔ v2: abort carousel pass; swipe bounds unavailable")
-                            break
+                        swipe(CAR_SWIPE_X1, CAR_SWIPE_Y, CAR_SWIPE_X2, CAR_SWIPE_Y, SWIPE_MS)
                         time.sleep(SLEEP_AFTER_SWIPE)
                         cur_xml_tmp = os.path.join(TMP_DIR, f"carousel_{i:02d}_detail.xml")
                         if not dump_xml_checked(cur_xml_tmp):
@@ -845,10 +808,7 @@ def main():
                     for i in range(2, min(MAX_CARDS, total) + 1):
                         if last_position >= total:
                             break
-                        if not swipe_carousel(summary_tmp if i == 2 else previous_xml, SWIPE_MS):
-                            log("⛔ v2: abort single-marker carousel; swipe bounds unavailable")
-                            cycle_ambiguous = True
-                            break
+                        swipe(CAR_SWIPE_X1, CAR_SWIPE_Y, CAR_SWIPE_X2, CAR_SWIPE_Y, SWIPE_MS)
                         time.sleep(SLEEP_AFTER_SWIPE)
                         cur = os.path.join(TMP_DIR, f"{gid}_card_{i:03d}.xml")
                         if not dump_xml_checked(cur):
@@ -860,14 +820,12 @@ def main():
                             log("🔄 card count/position changed; rescan next cycle")
                             break
                         if pos[0] <= last_position:
-                            previous_xml = cur
                             stall += 1
                             if stall >= MAX_STALL_SWIPES:
                                 cycle_ambiguous = True
                                 break
                             continue
                         last_position = pos[0]
-                        previous_xml = cur
                         stall = 0
                         capture_cards(cur)
                         if open_destination_if_needed(cur) is False:

@@ -39,12 +39,15 @@ def memory_mib(package):
     return info["pss_kib"] / 1024
 
 def ready(package, timeout=90):
+    """Confirm the Roadie activity is actually resumed on screen."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            focus = adb("shell", "dumpsys", "window", "windows", timeout=12)
-            if package in focus and ("mCurrentFocus" in focus or "mFocusedApp" in focus):
-                # UI focus is necessary but NOT proof of map readiness.
+            state = adb("shell", "dumpsys", "activity", "activities", timeout=12)
+            resumed = [line for line in state.splitlines()
+                       if "topResumedActivity=" in line or "mResumedActivity=" in line]
+            if any(package in line for line in resumed):
+                print("Roadie foreground confirmed", flush=True)
                 return True
         except (OSError, subprocess.SubprocessError):
             pass

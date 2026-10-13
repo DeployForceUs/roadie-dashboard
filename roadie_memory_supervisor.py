@@ -98,6 +98,15 @@ def main():
                 print(f"memory unavailable: {exc}", flush=True)
             time.sleep(10)
 
+    # Refuse to launch a second collector already running from another checkout.
+    processes = run("ps", "-axo", "pid=,command=")
+    existing = [line.strip() for line in processes.splitlines()
+                if "roadie_watcher_with_destinations.py" in line
+                and int(line.strip().split(None, 1)[0]) != os.getpid()]
+    if existing:
+        ap.error("existing Watcher detected; stop it before starting Supervisor: "
+                 + " | ".join(existing[:3]))
+
     # One supervisor per checkout. Avoid duplicate watcher launch.
     lock = BASE / ".roadie_memory_supervisor.lock"
     import fcntl
@@ -145,7 +154,7 @@ def main():
                     recover(args.package, args.activity, args.rmap)
                 except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:
                     print(f"recovery failed; no watcher relaunch until next budgeted attempt: {exc}", flush=True)
-                    time.sleep(10)
+                    return 3  # Do not launch Watcher after failed recovery.
         except KeyboardInterrupt:
             return 0
         finally:

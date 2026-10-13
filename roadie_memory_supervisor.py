@@ -32,6 +32,15 @@ def run(*args, timeout=20):
 def adb(*args, timeout=20):
     return run("adb", *args, timeout=timeout)
 
+def roadie_process_running(package):
+    """Return True/False for Android process; raise on ADB transport errors."""
+    result = subprocess.run(["adb", "shell", "pidof", package], capture_output=True, text=True, timeout=12)
+    if result.returncode == 0:
+        return bool(result.stdout.strip())
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
+        return False
+    raise RuntimeError(f"Android process check failed: {result.stderr.strip() or result.returncode}")
+
 def memory_mib(package):
     info = parse_meminfo(adb("shell", "dumpsys", "meminfo", package))
     if info["pss_kib"] is None:
@@ -118,6 +127,7 @@ def main():
         history = deque()
         child = None
         over = 0
+        missing_process = 0
         try:
             while True:
                 if restart_budget_exhausted(history, time.time()):
@@ -136,6 +146,17 @@ def main():
                         reason = f"stale heartbeat ({state})"
                         break
                     try:
+                        running = roadie_process_running(args.package)
+                        missing_process = 0 if running else missing_process + 1
+                        if not running:
+                            print(f"Roadie Android process missing ({missing_process}/2)", flush=True)
+                        if missing_process >= 2:
+                            reason = "Roadie Android process absent for 2 consecutive checks"
+                            break
+                    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                        missing_process = 0
+                        print(f"Roadie process check unavailable; defer decision: {exc}", flush=True)
+                    try:
                         pss = memory_mib(args.package)
                         over = over + 1 if pss >= args.pss_limit_mib else 0
                         print(f"PSS={pss:.1f} MiB over={over}/3", flush=True)
@@ -150,6 +171,7 @@ def main():
                 child = None
                 history.append(time.time())
                 over = 0
+                missing_process = 0
                 try:
                     recover(args.package, args.activity, args.rmap)
                 except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:

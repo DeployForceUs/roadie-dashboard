@@ -134,7 +134,7 @@ def main():
                     print("restart budget exhausted; stop", flush=True)
                     return 2
                 child = subprocess.Popen([sys.executable, "-u", str(WATCHER)], cwd=BASE)
-                started = time.time()\n                periodic_due_logged = False
+                started = time.time()\n                periodic_due_logged = False\n                last_cycle_done = None
                 print(f"watcher started pid={child.pid}", flush=True)
                 while True:
                     time.sleep(10)
@@ -142,7 +142,7 @@ def main():
                         reason = "watcher exited"
                         break
                     last, state = progress_for(child.pid, started)
-                    if (args.periodic_restart_minutes and\n                            time.time() - started >= args.periodic_restart_minutes * 60):\n                        if state == "CYCLE_DONE":\n                            reason = f"scheduled preventive recovery after {args.periodic_restart_minutes} min"\n                            break\n                        if not periodic_due_logged:\n                            print(f"scheduled recovery due; waiting for cycle boundary (state={state})", flush=True)\n                            periodic_due_logged = True\n                    if time.time() - last > 90:
+                    if state == "CYCLE_DONE" and last > started:\n                        last_cycle_done = last\n                    if (args.periodic_restart_minutes and\n                            time.time() - started >= args.periodic_restart_minutes * 60):\n                        if last_cycle_done is not None and last_cycle_done >= started + args.periodic_restart_minutes * 60 - 30:\n                            reason = f"scheduled preventive recovery after {args.periodic_restart_minutes} min"\n                            break\n                        if not periodic_due_logged:\n                            print(f"scheduled recovery due; waiting for cycle boundary (state={state})", flush=True)\n                            periodic_due_logged = True\n                    if time.time() - last > 90:
                         reason = f"stale heartbeat ({state})"
                         break
                     try:

@@ -88,11 +88,15 @@ def main():
     ap.add_argument("--package", required=True)
     ap.add_argument("--activity", required=True, help="Verified package/activity")
     ap.add_argument("--pss-limit-mib", required=True, type=int)
-    ap.add_argument("--periodic-restart-minutes", type=int, default=90,\n                    help="Preventive Roadie recovery interval; 0 disables (default: 90)")\n    ap.add_argument("--rmap", default=str(Path.home() / "bin/rmap"))
+    ap.add_argument("--periodic-restart-minutes", type=int, default=90,
+                    help="Preventive Roadie recovery interval; 0 disables (default: 90)")
+    ap.add_argument("--rmap", default=str(Path.home() / "bin/rmap"))
     ap.add_argument("--dry-run", action="store_true", default=False)
     ap.add_argument("--confirm-live", action="store_true")
     args = ap.parse_args()
-    if args.periodic_restart_minutes < 0:\n        ap.error("--periodic-restart-minutes must be >= 0")\n    if args.pss_limit_mib <= 0:
+    if args.periodic_restart_minutes < 0:
+        ap.error("--periodic-restart-minutes must be >= 0")
+    if args.pss_limit_mib <= 0:
         ap.error("measured positive PSS threshold required")
     if not args.dry_run and not args.confirm_live:
         ap.error("use --dry-run or explicitly --confirm-live")
@@ -134,7 +138,9 @@ def main():
                     print("restart budget exhausted; stop", flush=True)
                     return 2
                 child = subprocess.Popen([sys.executable, "-u", str(WATCHER)], cwd=BASE)
-                started = time.time()\n                periodic_due_logged = False\n                last_cycle_done = None
+                started = time.time()
+                periodic_due_logged = False
+                last_cycle_done = None
                 print(f"watcher started pid={child.pid}", flush=True)
                 while True:
                     time.sleep(10)
@@ -142,7 +148,17 @@ def main():
                         reason = "watcher exited"
                         break
                     last, state = progress_for(child.pid, started)
-                    if state == "CYCLE_DONE" and last > started:\n                        last_cycle_done = last\n                    if (args.periodic_restart_minutes and\n                            time.time() - started >= args.periodic_restart_minutes * 60):\n                        if last_cycle_done is not None and last_cycle_done >= started + args.periodic_restart_minutes * 60 - 30:\n                            reason = f"scheduled preventive recovery after {args.periodic_restart_minutes} min"\n                            break\n                        if not periodic_due_logged:\n                            print(f"scheduled recovery due; waiting for cycle boundary (state={state})", flush=True)\n                            periodic_due_logged = True\n                    if time.time() - last > 90:
+                    if state == "CYCLE_DONE" and last > started:
+                        last_cycle_done = last
+                    if (args.periodic_restart_minutes and
+                            time.time() - started >= args.periodic_restart_minutes * 60):
+                        if last_cycle_done is not None and last_cycle_done >= started + args.periodic_restart_minutes * 60 - 30:
+                            reason = f"scheduled preventive recovery after {args.periodic_restart_minutes} min"
+                            break
+                        if not periodic_due_logged:
+                            print(f"scheduled recovery due; waiting for cycle boundary (state={state})", flush=True)
+                            periodic_due_logged = True
+                    if time.time() - last > 90:
                         reason = f"stale heartbeat ({state})"
                         break
                     try:

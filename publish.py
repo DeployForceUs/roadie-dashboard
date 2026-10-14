@@ -153,9 +153,26 @@ def make_payload():
                         current_status = "verified_carousel" if len(current)==len(cards) else "partial_details"
                 except (ValueError,TypeError,KeyError,OverflowError):
                     pass
+    # Chronological price observations, capped to keep public JSON manageable.
+    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5) as db:
+        price_rows = db.execute(
+            "SELECT seen_at,gig_key,new_price FROM changes "
+            "WHERE event='PRICE_CHANGED' ORDER BY seen_at DESC LIMIT 3000"
+        ).fetchall()
+    price_history = {}
+    for seen_at, gig_key, new_price in reversed(price_rows):
+        try:
+            value = float(new_price)
+            if value < 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        price_history.setdefault(str(gig_key), []).append(
+            dict(at=normalize(seen_at), price=value)
+        )
     return dict(generated_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         current=current, current_status=current_status, scan_at=scan_at, history=history,
-        changes=[dict(x) for x in changes], note="Current is based on latest observed direct IDs; cluster coverage and detail freshness are not guaranteed")
+        changes=[dict(x) for x in changes], price_history=price_history, note="Current is based on latest observed direct IDs; cluster coverage and detail freshness are not guaranteed")
 
 def publish(payload):
     data=json.dumps(payload,ensure_ascii=False,separators=(",",":"))

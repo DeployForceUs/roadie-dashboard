@@ -342,12 +342,23 @@ def maybe_save_detail(xml_path: str, out_basename: str, ensure_session_cb, globa
     log(f"✅ NEW(minimal) → {out_basename}")
     return True
 
-# вспомогательная: дождаться POS с ожиданием (читает ровно тот файл, что передан)
+# Wait for the carousel counter using a NEW Android XML snapshot on each retry.
+# Keep xml_path updated: callers parse/save the same file after wait_pos returns.
 def wait_pos(xml_path: str, want_cur=None):
-    """Пытаемся прочитать POS несколько раз. Если want_cur задан, успех — когда cur==want_cur."""
+    """Return verified carousel position, refreshing the XML after unsuccessful reads."""
     log(f"[POS] reading from: {xml_path}")
-    for k in range(1, POS_WAIT_TRIES+1):
-        # файл уже должен существовать; при необходимости вызывающий код обновит его копию
+    retry_tmp = os.path.join(TMP_DIR, "pos_wait_fresh.xml")
+    for k in range(1, POS_WAIT_TRIES + 1):
+        if k > 1:
+            time.sleep(POS_WAIT_DELAY)
+            if not dump_xml_checked(retry_tmp):
+                log(f"[POS wait attempt {k}] fresh XML capture failed")
+                continue
+            try:
+                shutil.copy2(retry_tmp, xml_path)
+            except OSError as exc:
+                log(f"[POS wait attempt {k}] XML mirror failed: {exc}")
+                continue
         pos_text = read_pos_text(xml_path)
         if pos_text:
             c, t = parse_pos(pos_text)
@@ -356,7 +367,6 @@ def wait_pos(xml_path: str, want_cur=None):
                 return (c, t, pos_text)
         else:
             log(f"[POS wait attempt {k}] not found")
-        time.sleep(POS_WAIT_DELAY)
     return (None, None, "")
 
 # ---------- основной цикл ----------

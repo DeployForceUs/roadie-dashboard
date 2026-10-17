@@ -16,7 +16,7 @@ import os, time, subprocess, xml.etree.ElementTree as ET, re, sys, shutil, hashl
 from roadie_store import db_open, parse as store_parse, fields as store_fields, CITY, ROUTE, DELIVERIES, key as gig_key, extract_cargo
 from datetime import datetime
 from time import perf_counter
-from roadie_ui_guard import Screen, classify_xml, allowed_action, refresh_bounds
+from roadie_ui_guard import Screen, classify_xml, allowed_action, refresh_bounds, is_card_overlay_present
 from roadie_capture import capture_xml, CaptureError
 
 # ===================== ТЮНЕРЫ =====================
@@ -127,31 +127,63 @@ def dump_xml_checked(dst_path: str) -> bool:
 
 def observed_screen(path: str) -> Screen:
     try:
-        return classify_xml(open(path, encoding='utf-8').read())
+        with open(path, encoding='utf-8') as f:
+            return classify_xml(f.read())
     except (OSError, UnicodeError):
         return Screen.UNKNOWN
 
-def recover_to_map() -> bool:
-    """Only press Back on positively identified carousel/detail screens."""
+def is_genuine_map_screen(path: str) -> bool:
+    """Verify screen is positively classified as MAP and has NO card or detail overlay."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            xml_text = f.read()
+    except (OSError, UnicodeError):
+        return False
+    if is_card_overlay_present(xml_text):
+        return False
+    return classify_xml(xml_text) is Screen.MAP
+
+def recover_to_map(max_attempts: int = 5) -> bool:
+    """Ensure screen is genuinely MAP and no gig card overlay remains.
+    Bounded recovery: press Back on positively identified carousel/detail/card screens.
+    Never resume scanning or tapping markers until map restoration is verified.
+    """
     probe = os.path.join(TMP_DIR, 'screen_probe.xml')
-    for attempt in range(4):
+    for attempt in range(1, max_attempts + 1):
         if not dump_xml_checked(probe):
-            log('⛔ cannot verify screen; no tap or Back')
-            return False
-        screen = observed_screen(probe)
-        if screen is Screen.MAP:
+            log(f'⛔ cannot verify screen (attempt {attempt}/{max_attempts}); no tap or Back')
+            continue
+        try:
+            with open(probe, encoding='utf-8') as f:
+                xml_text = f.read()
+        except (OSError, UnicodeError):
+            log(f'⛔ cannot read probe XML (attempt {attempt}/{max_attempts})')
+            continue
+
+        card_open = is_card_overlay_present(xml_text)
+        screen = classify_xml(xml_text)
+
+        if screen is Screen.MAP and not card_open:
             heartbeat("MAP")
             return True
-        if screen is Screen.DETAIL and allowed_action(screen, 'close_detail'):
-            log('↩️ DETAIL verified; returning toward MAP')
+
+        if screen is Screen.DETAIL:
+            log(f'↩️ DETAIL verified (attempt {attempt}/{max_attempts}); returning toward MAP')
             back()
-        elif screen is Screen.CAROUSEL and allowed_action(screen, 'back_to_map'):
-            log('↩️ CAROUSEL verified; returning toward MAP')
+        elif screen is Screen.CAROUSEL or card_open:
+            log(f'↩️ CAROUSEL/card overlay verified (attempt {attempt}/{max_attempts}); returning toward MAP')
             back()
         else:
-            log('⛔ UNKNOWN screen; no blind navigation')
+            log(f'⛔ UNKNOWN screen without card overlay (attempt {attempt}/{max_attempts}); no blind navigation')
             return False
         time.sleep(SLEEP_AFTER_BACK)
+
+    # Final verification after bounded Back attempts
+    if dump_xml_checked(probe) and is_genuine_map_screen(probe):
+        heartbeat("MAP")
+        return True
+
+    log('⛔ card overlay still present after bounded recovery; will not resume scanning')
     return False
 
 def get_bounds_center(bounds: str):
@@ -396,7 +428,8 @@ def main():
         # coordinate unless the control is present in a verified map XML.
         probe_path = os.path.join(TMP_DIR, 'screen_probe.xml')
         try:
-            verified_bounds = refresh_bounds(open(probe_path, encoding="utf-8").read())
+            with open(probe_path, encoding="utf-8") as f:
+                verified_bounds = refresh_bounds(f.read())
         except (OSError, UnicodeError):
             verified_bounds = None
         if verified_bounds:
@@ -411,8 +444,8 @@ def main():
         if not dump_xml_checked(start_tmp):
             log("⚠️ start dump failed, skip"); time.sleep(0.35); continue
 
-        if observed_screen(start_tmp) is not Screen.MAP:
-            log("⛔ observed non-MAP screen; no map_scans write")
+        if not is_genuine_map_screen(start_tmp):
+            log("⛔ observed non-MAP screen or card overlay still present; no map_scans write or marker tap")
             time.sleep(1.0)
             continue
         heartbeat("MAP_REFRESHED" if verified_bounds else "MAP_OBSERVED_NO_REFRESH")
@@ -579,13 +612,15 @@ def main():
                             m = POS_RE.match(node.get("text",""))
                             if m: candidates.append((int(m.group(1)),bounds))
                 if not candidates:
-                    summaries = [
-                        n for n in root.iter()
-                        if n.get("resource-id", "").split("/")[-1] == "gig_summary_card"
-                        and n.get("bounds", "") not in ("", "[0,0][0,0]")
-                    ]
-                    if len(summaries) == 1:
-                        candidates = [(1, summaries[0].get("bounds", ""))]
+                    for marker in ("gig_summary_card", "gig_summary", "gig_card"):
+                        summaries = [
+                            n for n in root.iter()
+                            if n.get("resource-id", "").split("/")[-1] == marker
+                            and n.get("bounds", "") not in ("", "[0,0][0,0]")
+                        ]
+                        if len(summaries) == 1:
+                            candidates = [(1, summaries[0].get("bounds", ""))]
+                            break
                 if len(candidates) != 1:
                     return
                 position, bounds = candidates[0]
@@ -666,13 +701,15 @@ def main():
                                 active.append(int(m.group(1)))
                     _, returned_cards = store_fields(store_parse(verify))
                     if not active and observed_screen(verify) is Screen.CAROUSEL:
-                        summaries = [
-                            n for n in ET.parse(verify).getroot().iter()
-                            if n.get("resource-id", "").split("/")[-1] == "gig_summary_card"
-                            and n.get("bounds", "") not in ("", "[0,0][0,0]")
-                        ]
-                        if len(summaries) == 1:
-                            active = [1]
+                        for marker in ("gig_summary_card", "gig_summary", "gig_card"):
+                            summaries = [
+                                n for n in ET.parse(verify).getroot().iter()
+                                if n.get("resource-id", "").split("/")[-1] == marker
+                                and n.get("bounds", "") not in ("", "[0,0][0,0]")
+                            ]
+                            if len(summaries) == 1:
+                                active = [1]
+                                break
                     if len(active) != 1 or active[0] != position or returned_cards.get(position,{}).get("key") != k:
                         log(f"🔄 carousel changed on return: {k}, position={position}, active={active}; rescan next cycle")
                         return False
@@ -720,11 +757,15 @@ def main():
                     if open_destination_if_needed(first_xml_sess) is False:
                         log("🔄 stopping this carousel pass after change")
                         back(); time.sleep(SLEEP_AFTER_BACK)
+                        if not recover_to_map():
+                            log("⛔ failed to verify map restoration after carousel; rescan next cycle")
                         continue
                     active_start = visible_position(first_xml_sess)
                     if not active_start:
                         log('⚠️ no unique active card; abandon carousel pass')
                         back(); time.sleep(SLEEP_AFTER_BACK)
+                        if not recover_to_map():
+                            log("⛔ failed to verify map restoration after carousel; rescan next cycle")
                         continue
                     last_position = active_start[0]
                     total = t1
@@ -770,9 +811,30 @@ def main():
                     record_cards_if_complete()
                     carousel_lastN[str(cl_bounds)] = total
                     back(); time.sleep(SLEEP_AFTER_BACK)
+                    if not recover_to_map():
+                        log("⛔ failed to verify map restoration after carousel; rescan next cycle")
                     continue
 
-                # No verified carousel: NEVER swipe the map.
+                # Check if cluster shrank to 1 gig and wait_pos() returned None
+                try:
+                    with open(first_xml_sess, encoding='utf-8') as f:
+                        sess_txt = f.read()
+                except (OSError, UnicodeError):
+                    sess_txt = ""
+                if observed_screen(first_xml_sess) is Screen.CAROUSEL or is_card_overlay_present(sess_txt):
+                    log("📦 cluster shrank to 1 gig (single card without counter); processing single card")
+                    map_needs_rescan = True
+                    maybe_save_detail(first_xml_sess, "carousel_01_info.csv",
+                                      ensure_session_for_first_save, saved_card_sigs)
+                    capture_cards(first_xml_sess)
+                    open_destination_if_needed(first_xml_sess)
+                    record_cards_if_complete()
+                    back(); time.sleep(SLEEP_AFTER_BACK)
+                    if not recover_to_map():
+                        log("⛔ failed to restore MAP after shrunk carousel")
+                    continue
+
+                # No verified carousel or card: NEVER swipe the map.
                 log("⛔ no verified carousel after tap: skip swipes and rescan map")
                 map_needs_rescan = True
                 # If already on map, BACK would leave the app; avoid blind BACK.
@@ -791,60 +853,72 @@ def main():
                 marker_last_opened[gid] = time.monotonic()
                 tap(x,y); time.sleep(SLEEP_AFTER_TAP)
 
-                # Read the first summary BEFORE any swipe or detail tap.
-                summary_tmp = os.path.join(TMP_DIR, f"{gid}_summary.xml")
-                if not dump_xml_checked(summary_tmp):
-                    log("⛔ direct summary capture failed; recover next cycle")
+                try:
+                    # Read the first summary BEFORE any swipe or detail tap.
+                    summary_tmp = os.path.join(TMP_DIR, f"{gid}_summary.xml")
+                    if not dump_xml_checked(summary_tmp):
+                        log("⛔ direct summary capture failed; recover next cycle")
+                        map_needs_rescan = True
+                    elif observed_screen(summary_tmp) is not Screen.CAROUSEL:
+                        direct_marker_retry_after[gid] = (
+                            time.monotonic() + DIRECT_MARKER_RETRY_SECONDS
+                        )
+                        log(f"⛔ unexpected marker result: {observed_screen(summary_tmp)}; retry after {DIRECT_MARKER_RETRY_SECONDS}s; recover next cycle")
+                        map_needs_rescan = True
+                    else:
+                        capture_cards(summary_tmp)
+                        active_card = cycle_cards.get(1)
+                        if not active_card:
+                            log("⛔ no verified first card fields; recover next cycle")
+                            map_needs_rescan = True
+                        else:
+                            log(f"📦 first card {gid}: {active_card['key']} / {active_card['price']}")
+                            if open_destination_if_needed(summary_tmp) is False:
+                                log("🔄 first card changed; recover next cycle")
+                                map_needs_rescan = True
+                            else:
+                                # A verified counter permits N-1 swipes. No counter means
+                                # one visible card and absolutely no speculative swipe.
+                                active_pos = visible_position(summary_tmp)
+                                if active_pos and active_pos[1] > 1:
+                                    last_position, total = active_pos
+                                    stall = 0
+                                    for i in range(2, min(MAX_CARDS, total) + 1):
+                                        if last_position >= total:
+                                            break
+                                        swipe(CAR_SWIPE_X1, CAR_SWIPE_Y, CAR_SWIPE_X2, CAR_SWIPE_Y, SWIPE_MS)
+                                        time.sleep(SLEEP_AFTER_SWIPE)
+                                        cur = os.path.join(TMP_DIR, f"{gid}_card_{i:03d}.xml")
+                                        if not dump_xml_checked(cur):
+                                            cycle_ambiguous = True
+                                            break
+                                        pos = visible_position(cur)
+                                        if not pos or pos[1] != total:
+                                            cycle_ambiguous = True
+                                            log("🔄 card count/position changed; rescan next cycle")
+                                            break
+                                        if pos[0] <= last_position:
+                                            stall += 1
+                                            if stall >= MAX_STALL_SWIPES:
+                                                cycle_ambiguous = True
+                                                break
+                                            continue
+                                        last_position = pos[0]
+                                        stall = 0
+                                        capture_cards(cur)
+                                        if open_destination_if_needed(cur) is False:
+                                            cycle_ambiguous = True
+                                            break
+                                record_cards_if_complete()
+                                seen.add((gid, e["bounds"]))
+                finally:
+                    back()
+                    time.sleep(SLEEP_AFTER_BACK)
+                    if not recover_to_map():
+                        log("⛔ failed to verify map restoration after single card; rescan next cycle")
+                        map_needs_rescan = True
+                if map_needs_rescan:
                     break
-                summary_screen = observed_screen(summary_tmp)
-                if summary_screen is not Screen.CAROUSEL:
-                    log(f"⛔ unexpected marker result: {summary_screen}; recover next cycle")
-                    break
-                capture_cards(summary_tmp)
-                active_card = cycle_cards.get(1)
-                if not active_card:
-                    log("⛔ no verified first card fields; recover next cycle")
-                    break
-                log(f"📦 first card {gid}: {active_card['key']} / {active_card['price']}")
-                if open_destination_if_needed(summary_tmp) is False:
-                    log("🔄 first card changed; recover next cycle")
-                    break
-                # A verified counter permits N-1 swipes. No counter means
-                # one visible card and absolutely no speculative swipe.
-                active_pos = visible_position(summary_tmp)
-                if active_pos and active_pos[1] > 1:
-                    last_position, total = active_pos
-                    stall = 0
-                    for i in range(2, min(MAX_CARDS, total) + 1):
-                        if last_position >= total:
-                            break
-                        swipe(CAR_SWIPE_X1, CAR_SWIPE_Y, CAR_SWIPE_X2, CAR_SWIPE_Y, SWIPE_MS)
-                        time.sleep(SLEEP_AFTER_SWIPE)
-                        cur = os.path.join(TMP_DIR, f"{gid}_card_{i:03d}.xml")
-                        if not dump_xml_checked(cur):
-                            cycle_ambiguous = True
-                            break
-                        pos = visible_position(cur)
-                        if not pos or pos[1] != total:
-                            cycle_ambiguous = True
-                            log("🔄 card count/position changed; rescan next cycle")
-                            break
-                        if pos[0] <= last_position:
-                            stall += 1
-                            if stall >= MAX_STALL_SWIPES:
-                                cycle_ambiguous = True
-                                break
-                            continue
-                        last_position = pos[0]
-                        stall = 0
-                        capture_cards(cur)
-                        if open_destination_if_needed(cur) is False:
-                            cycle_ambiguous = True
-                            break
-                record_cards_if_complete()
-                seen.add((gid, e["bounds"]))
-                back()
-                time.sleep(SLEEP_AFTER_BACK)
 
         gig_db.close()
         heartbeat("CYCLE_DONE")

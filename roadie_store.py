@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 POS = re.compile(r"^(\d+)\s+OF\s+(\d+)$", re.I)
-ROUTE = re.compile(r"^(\d+(?:\.\d+)?)\s+mi\s*\((\d+)\s+min\)$", re.I)
+ROUTE = re.compile(r"^(\d+(?:\.\d+)?)\s+mi\s*\((?:(\d+)\s+hr\s+)?(\d+)\s+min\)$", re.I)
 DELIVERIES = re.compile(r"^(\d+)\s+deliver(?:y|ies)$", re.I)
 CITY = re.compile(r"^[A-Za-z][A-Za-z .'-]*,\s*[A-Z]{2}$")
 PRICE = re.compile(r"^\d+(?:\.\d{1,2})?$")
@@ -161,10 +161,12 @@ def fields(nodes):
     # parse() returns (resource-id, text, content-desc) tuples, not an XML path.
     # Only one summary marker is unambiguous; never invent multiple cards.
     if not positions:
-        summaries = [i for i, (rid, _, _) in enumerate(nodes)
-                     if rid == "gig_summary_card"]
-        if len(summaries) == 1:
-            positions = [(summaries[0], 1, 1)]
+        for marker in ("gig_summary_card", "gig_summary", "gig_card"):
+            summaries = [i for i, (rid, _, _) in enumerate(nodes)
+                         if rid == marker]
+            if len(summaries) == 1:
+                positions = [(summaries[0], 1, 1)]
+                break
     out = {}
     for k,(idx,number,total) in enumerate(positions):
         end = positions[k+1][0] if k+1 < len(positions) else len(nodes)
@@ -172,11 +174,14 @@ def fields(nodes):
         miles = minutes = deliveries = price = fit = None
         for rid,t,d in seg:
             if (m := ROUTE.match(t)):
-                miles,minutes = m.groups()
+                miles,hours,mins = m.groups()
+                minutes = int(hours or 0) * 60 + int(mins)
             if (m := DELIVERIES.match(t)):
                 deliveries = int(m.group(1))
-            if rid == "consolidation_price" and PRICE.fullmatch(t):
-                price = t
+            if rid in ("consolidation_price", "dollar_amount", "price") and PRICE.fullmatch(t.lstrip("$")):
+                price = t.lstrip("$")
+            elif t.startswith("$") and PRICE.fullmatch(t[1:]):
+                price = t[1:]
             if "FIT FOR FORD" in t.upper():
                 fit = t
         if miles is not None and deliveries is not None and price is not None:

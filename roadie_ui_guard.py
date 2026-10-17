@@ -8,6 +8,15 @@ class Screen(str, Enum):
     DETAIL = "detail"
     UNKNOWN = "unknown"
 
+def is_card_overlay_present(xml_text: str) -> bool:
+    """Return True if a gig card overlay or details screen is mounted."""
+    try:
+        root = ET.fromstring(xml_text)
+    except (ET.ParseError, TypeError):
+        return False
+    ids = {n.get("resource-id", "").split("/")[-1] for n in root.iter()}
+    return bool("gig_card_pager" in ids or {"close_details", "details_container_scroll"} <= ids)
+
 def classify_xml(xml_text: str) -> Screen:
     try:
         root = ET.fromstring(xml_text)
@@ -17,12 +26,23 @@ def classify_xml(xml_text: str) -> Screen:
     # A direct map marker opens a single AVAILABLE GIG summary card.
     # It has gig_card_pager but NO position_in_stack. The map remains
     # mounted behind the overlay, so MAP markers can coexist with it.
-    if {"close_details", "details_container_scroll"} <= ids:
+    is_detail = {"close_details", "details_container_scroll"} <= ids
+    card_markers = {"position_in_stack", "gig_summary_card", "gig_summary", "gig_card"}
+    is_carousel = "gig_card_pager" in ids and bool(card_markers & ids)
+
+    # Conflicting or ambiguous screen markers fail closed
+    if is_detail and ({"refresh_button", "menu_button"} <= ids or "gig_card_pager" in ids):
+        return Screen.UNKNOWN
+    if "gig_card_pager" in ids and {"refresh_button", "menu_button"} <= ids:
+        return Screen.UNKNOWN
+
+    if is_detail:
         return Screen.DETAIL
-    if "gig_card_pager" in ids and (
-        "position_in_stack" in ids or "gig_summary_card" in ids
-    ):
+    if is_carousel:
         return Screen.CAROUSEL
+    if "gig_card_pager" in ids:
+        return Screen.UNKNOWN
+
     # The Roadie map can remain mounted without a refresh control.
     # Require both the map container and Google Map accessibility node;
     # menu_button alone is not sufficient. Carousel/detail take precedence.
